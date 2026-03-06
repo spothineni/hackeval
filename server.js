@@ -10,7 +10,7 @@ const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-be
 
 const JWT_SECRET = process.env.JWT_SECRET || 'hackathon-eval-secret-key-change-in-production';
 const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
-const BEDROCK_MODEL = process.env.BEDROCK_MODEL || 'anthropic.claude-3-sonnet-20240229-v1:0';
+const BEDROCK_MODEL = process.env.BEDROCK_MODEL || 'us.anthropic.claude-sonnet-4-5-20250514-v1:0';
 
 const app = express();
 const PORT = process.env.PORT || 3000;

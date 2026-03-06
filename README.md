@@ -12,7 +12,7 @@ Built with **Node.js**, **SQLite**, and a **glassmorphism dark-mode SPA**.
 |---|---|
 | 🔐 **3-Role Auth** | Admin, Judge, Participant — JWT-based with bcrypt |
 | 📂 **File Uploads** | Participants upload code, README, PPT, PDF via drag-and-drop |
-| 🤖 **AI Evaluation** | AWS Bedrock Claude 3 Sonnet scores projects automatically |
+| 🤖 **AI Evaluation** | AWS Bedrock Claude Sonnet 4.5 (`us.anthropic.claude-sonnet-4-5-20250514-v1:0`) scores projects automatically |
 | ⭐ **Human Judging** | Judges rate projects on configurable criteria (1–10 sliders) |
 | 📊 **Hybrid Leaderboard** | Blends human + AI scores with configurable weight |
 | ⚙️ **Admin Settings** | Hackathon name, evaluation criteria, AI weight, user management |
@@ -86,7 +86,7 @@ Built with **Node.js**, **SQLite**, and a **glassmorphism dark-mode SPA**.
 1. **Participant registers** → automatically gets the `participant` role
 2. **Creates a project** on the "My Project" page (name, team, description, tech stack)
 3. **Uploads files** — code, README, PPT, PDF, images (max 5 files, 10MB each)
-4. **Admin triggers AI evaluation** 🤖 → sends files to AWS Bedrock Claude 3 Sonnet → returns per-criterion scores + reasoning
+4. **Admin triggers AI evaluation** 🤖 → sends files to AWS Bedrock Claude Sonnet 4.5 → returns per-criterion scores + reasoning
 5. **Human judges evaluate** → rate projects on criteria like Innovation, Technical Complexity, Design & UX, etc.
 6. **Leaderboard auto-computes** hybrid scores: `(Human × 0.6) + (AI × 0.4)` (weight configurable)
 
@@ -110,7 +110,7 @@ Built with **Node.js**, **SQLite**, and a **glassmorphism dark-mode SPA**.
 ### Prerequisites
 - **Node.js** 18+
 - **AWS credentials** configured (`~/.aws/credentials`) — for AI evaluation
-- **Claude 3 Sonnet** enabled in AWS Bedrock console
+- **Claude Sonnet 4.5** (`us.anthropic.claude-sonnet-4-5-20250514-v1:0`) enabled in AWS Bedrock console
 
 ### Install & Run
 
@@ -168,7 +168,7 @@ hackthon-evaluator/
 | **Database** | SQLite (better-sqlite3) |
 | **Auth** | JWT + bcrypt |
 | **File Upload** | Multer |
-| **AI Evaluation** | AWS Bedrock (Claude 3 Sonnet) |
+| **AI Evaluation** | AWS Bedrock (Claude Sonnet 4.5) |
 | **Frontend** | Vanilla JS SPA |
 | **Styling** | CSS with glassmorphism, gradients, micro-animations |
 
