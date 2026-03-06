@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="Hackathon Evaluator — Score, rank, and manage hackathon submissions with a beautiful judging interface.">
+    <title>Hackathon Evaluator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <!-- Ambient background blobs -->
+    <div class="ambient-bg">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <!-- Auth Screen (Login / Register) -->
+    <div class="auth-screen" id="auth-screen">
+        <div class="auth-card glass-card no-hover" id="auth-card">
+            <div class="auth-logo">
+                <span class="auth-logo-icon">⚡</span>
+                <span class="auth-logo-text">HackEval</span>
+            </div>
+            <p class="auth-subtitle" id="auth-subtitle">Sign in to your account</p>
+            <form id="auth-form" autocomplete="off">
+                <div class="form-group">
+                    <label class="form-label" for="auth-username">Username</label>
+                    <input class="form-input" id="auth-username" placeholder="Enter username" required
+                        autocomplete="username">
+                </div>
+                <div class="form-group auth-register-field" id="auth-email-group" style="display:none;">
+                    <label class="form-label" for="auth-email">Email</label>
+                    <input class="form-input" id="auth-email" type="email" placeholder="you@example.com"
+                        autocomplete="email">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="auth-password">Password</label>
+                    <input class="form-input" id="auth-password" type="password" placeholder="Enter password" required
+                        autocomplete="current-password">
+                </div>
+                <div class="form-group auth-register-field" id="auth-displayname-group" style="display:none;">
+                    <label class="form-label" for="auth-displayname">Display Name</label>
+                    <input class="form-input" id="auth-displayname" placeholder="How others will see you"
+                        autocomplete="name">
+                </div>
+                <div id="auth-error" class="auth-error" style="display:none;"></div>
+                <button type="submit" class="btn btn-primary auth-submit" id="auth-submit">Sign In</button>
+            </form>
+            <div class="auth-toggle">
+                <span id="auth-toggle-text">Don't have an account?</span>
+                <a href="#" id="auth-toggle-link" class="auth-toggle-link">Create one</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- App Shell (hidden until authenticated) -->
+    <div class="app-shell" id="app-shell" style="display:none;">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">⚡</span>
+                    <span class="logo-text" id="sidebar-title">HackEval</span>
+                </div>
+                <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+                    <span class="toggle-icon">☰</span>
+                </button>
+            </div>
+            <ul class="nav-links">
+                <li>
+                    <a href="#dashboard" class="nav-link active" data-page="dashboard" id="nav-dashboard">
+                        <span class="nav-icon">📊</span>
+                        <span class="nav-label">Dashboard</span>
+                    </a>
+                </li>
+                <li id="nav-projects-item">
+                    <a href="#projects" class="nav-link" data-page="projects" id="nav-projects">
+                        <span class="nav-icon">🚀</span>
+                        <span class="nav-label">Projects</span>
+                    </a>
+                </li>
+                <li id="nav-myproject-item">
+                    <a href="#myproject" class="nav-link" data-page="myproject" id="nav-myproject">
+                        <span class="nav-icon">📂</span>
+                        <span class="nav-label">My Project</span>
+                    </a>
+                </li>
+                <li id="nav-judging-item">
+                    <a href="#judging" class="nav-link" data-page="judging" id="nav-judging">
+                        <span class="nav-icon">⭐</span>
+                        <span class="nav-label">Judging</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="#leaderboard" class="nav-link" data-page="leaderboard" id="nav-leaderboard">
+                        <span class="nav-icon">🏆</span>
+                        <span class="nav-label">Leaderboard</span>
+                    </a>
+                </li>
+                <li id="nav-settings-item">
+                    <a href="#settings" class="nav-link" data-page="settings" id="nav-settings">
+                        <span class="nav-icon">⚙️</span>
+                        <span class="nav-label">Settings</span>
+                    </a>
+                </li>
+            </ul>
+            <div class="sidebar-footer">
+                <div class="user-info" id="user-info">
+                    <div class="user-avatar" id="user-avatar">A</div>
+                    <div class="user-details">
+                        <div class="user-name" id="user-name">Admin</div>
+                        <div class="user-role" id="user-role">admin</div>
+                    </div>
+                </div>
+                <button class="btn-logout" id="btn-logout" title="Sign out">
+                    <span>🚪</span>
+                    <span class="nav-label">Sign Out</span>
+                </button>
+                <div class="hackathon-badge" id="hackathon-badge">
+                    <span class="badge-dot"></span>
+                    <span class="badge-text">TechHack 2026</span>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content" id="main-content">
+            <div class="page-container" id="page-container">
+                <!-- Pages rendered dynamically by app.js -->
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal Overlay -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal" id="modal">
+            <div class="modal-header">
+                <h2 class="modal-title" id="modal-title"></h2>
+                <button class="modal-close" id="modal-close" aria-label="Close modal">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+            <div class="modal-footer" id="modal-footer"></div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
