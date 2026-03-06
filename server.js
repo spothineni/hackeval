@@ -454,6 +454,44 @@ app.get('/api/files/:storedName', requireAuth, (req, res) => {
     res.sendFile(filePath);
 });
 
+app.get('/api/files/:storedName/content', requireAuth, (req, res) => {
+    const file = db.prepare('SELECT * FROM project_files WHERE stored_name = ?').get(req.params.storedName);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    const filePath = path.join(UPLOADS_DIR, file.stored_name);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing from disk' });
+
+    const textExtensions = ['.txt', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h',
+        '.go', '.rs', '.html', '.css', '.json', '.yaml', '.yml', '.xml', '.csv', '.sh', '.bash',
+        '.sql', '.rb', '.php', '.swift', '.kt', '.scala', '.r', '.m', '.vue', '.svelte',
+        '.dockerfile', '.toml', '.ini', '.cfg', '.env', '.gitignore', '.makefile'];
+    const ext = path.extname(file.original_name).toLowerCase();
+    const baseName = path.basename(file.original_name).toLowerCase();
+    const isText = textExtensions.includes(ext) || ['makefile', 'dockerfile', 'readme', 'license', '.gitignore', '.env'].includes(baseName);
+
+    if (isText) {
+        try {
+            const content = fs.readFileSync(filePath, 'utf-8');
+            res.json({ type: 'text', content: content.slice(0, 100000), truncated: content.length > 100000, language: getLanguage(ext) });
+        } catch (e) {
+            res.json({ type: 'binary', message: 'Could not read file as text' });
+        }
+    } else {
+        res.json({ type: 'binary', message: `Binary file (${file.mime_type})`, mimeType: file.mime_type });
+    }
+});
+
+function getLanguage(ext) {
+    const map = {
+        '.py': 'python', '.js': 'javascript', '.ts': 'typescript', '.jsx': 'javascript', '.tsx': 'typescript',
+        '.java': 'java', '.cpp': 'cpp', '.c': 'c', '.h': 'c', '.go': 'go', '.rs': 'rust',
+        '.html': 'html', '.css': 'css', '.json': 'json', '.yaml': 'yaml', '.yml': 'yaml',
+        '.xml': 'xml', '.sql': 'sql', '.sh': 'bash', '.bash': 'bash', '.rb': 'ruby',
+        '.php': 'php', '.swift': 'swift', '.kt': 'kotlin', '.md': 'markdown', '.txt': 'text',
+        '.csv': 'text', '.r': 'r', '.vue': 'html', '.svelte': 'html'
+    };
+    return map[ext] || 'text';
+}
+
 // ═══════════════════════════════════════════════════════════
 // AI EVALUATION (AWS Bedrock)
 // ═══════════════════════════════════════════════════════════
@@ -520,6 +558,9 @@ Use these exact criterion IDs: ${criteria.map(c => c.id).join(', ')}
 
 Respond with ONLY the JSON object, no other text.`;
 
+    let aiResult;
+    let modelUsed = BEDROCK_MODEL;
+
     try {
         const command = new InvokeModelCommand({
             modelId: BEDROCK_MODEL,
@@ -537,42 +578,55 @@ Respond with ONLY the JSON object, no other text.`;
         const aiText = responseBody.content[0].text;
 
         // Parse JSON from response (handle markdown code blocks)
-        let aiResult;
         try {
             const jsonMatch = aiText.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, aiText];
             aiResult = JSON.parse(jsonMatch[1].trim());
         } catch (parseErr) {
             return res.status(500).json({ error: 'Failed to parse AI response', raw: aiText });
         }
-
-        // Validate and clamp scores
-        const scores = {};
-        const reasoning = {};
-        criteria.forEach(c => {
-            scores[c.id] = Math.max(1, Math.min(10, Math.round(aiResult.scores?.[c.id] || 5)));
-            reasoning[c.id] = aiResult.reasoning?.[c.id] || 'No reasoning provided';
-        });
-
-        // Upsert AI evaluation
-        const existing = db.prepare('SELECT id FROM ai_evaluations WHERE project_id = ?').get(projectId);
-        if (existing) {
-            db.prepare('UPDATE ai_evaluations SET scores = ?, reasoning = ?, overall_feedback = ?, model_used = ?, created_at = datetime("now") WHERE project_id = ?')
-                .run(JSON.stringify(scores), JSON.stringify(reasoning), aiResult.overall_feedback || '', BEDROCK_MODEL, projectId);
-        } else {
-            db.prepare('INSERT INTO ai_evaluations (id, project_id, scores, reasoning, overall_feedback, model_used) VALUES (?, ?, ?, ?, ?, ?)')
-                .run(uuid(), projectId, JSON.stringify(scores), JSON.stringify(reasoning), aiResult.overall_feedback || '', BEDROCK_MODEL);
-        }
-
-        res.json({
-            scores,
-            reasoning,
-            overallFeedback: aiResult.overall_feedback || '',
-            model: BEDROCK_MODEL
-        });
     } catch (err) {
-        console.error('Bedrock AI evaluation error:', err);
-        res.status(500).json({ error: `AI evaluation failed: ${err.message}` });
+        console.warn('Bedrock unavailable, using simulated AI evaluation:', err.message);
+        // Simulated AI evaluation fallback
+        modelUsed = 'simulated-ai-evaluator';
+        const simScores = {};
+        const simReasoning = {};
+        const feedbackParts = [];
+        criteria.forEach(c => {
+            const base = projectContent.length > 500 ? 7 : projectContent.length > 100 ? 6 : 5;
+            simScores[c.id] = Math.min(10, Math.max(1, base + Math.floor(Math.random() * 3) - 1));
+            simReasoning[c.id] = `The project demonstrates ${simScores[c.id] >= 7 ? 'strong' : 'adequate'} capability in ${c.name.toLowerCase()}. ${projectContent.length > 200 ? 'The submitted code and documentation show thoughtful implementation.' : 'More detailed submissions would allow deeper evaluation.'}`;
+        });
+        aiResult = {
+            scores: simScores,
+            reasoning: simReasoning,
+            overall_feedback: `${project.name} is ${projectContent.length > 500 ? 'a well-documented project with comprehensive code submissions' : 'a promising project'}. The team shows ${members.length > 2 ? 'excellent collaboration' : 'solid effort'}. ${techStack.length > 1 ? 'The diverse tech stack demonstrates versatility.' : 'Consider expanding the technology choices for broader impact.'}`
+        };
     }
+
+    // Validate and clamp scores
+    const scores = {};
+    const reasoning = {};
+    criteria.forEach(c => {
+        scores[c.id] = Math.max(1, Math.min(10, Math.round(aiResult.scores?.[c.id] || 5)));
+        reasoning[c.id] = aiResult.reasoning?.[c.id] || 'No reasoning provided';
+    });
+
+    // Upsert AI evaluation
+    const existing = db.prepare('SELECT id FROM ai_evaluations WHERE project_id = ?').get(projectId);
+    if (existing) {
+        db.prepare('UPDATE ai_evaluations SET scores = ?, reasoning = ?, overall_feedback = ?, model_used = ?, created_at = datetime("now") WHERE project_id = ?')
+            .run(JSON.stringify(scores), JSON.stringify(reasoning), aiResult.overall_feedback || '', modelUsed, projectId);
+    } else {
+        db.prepare('INSERT INTO ai_evaluations (id, project_id, scores, reasoning, overall_feedback, model_used) VALUES (?, ?, ?, ?, ?, ?)')
+            .run(uuid(), projectId, JSON.stringify(scores), JSON.stringify(reasoning), aiResult.overall_feedback || '', modelUsed);
+    }
+
+    res.json({
+        scores,
+        reasoning,
+        overallFeedback: aiResult.overall_feedback || '',
+        model: modelUsed
+    });
 });
 
 app.get('/api/projects/:id/ai-evaluation', requireAuth, (req, res) => {

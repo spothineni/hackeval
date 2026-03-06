@@ -1905,3 +1905,228 @@ body {
         grid-template-columns: repeat(2, 1fr);
     }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   FILE BROWSER (Judging Page)
+   ═══════════════════════════════════════════════════════════ */
+
+.file-browser {
+    margin-bottom: var(--space-lg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.file-browser-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-sm) var(--space-md);
+    background: rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.file-browser-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+}
+
+.file-count-badge {
+    background: var(--accent-blue);
+    color: white;
+    font-size: 0.65rem;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 700;
+}
+
+.file-browser-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.file-list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.file-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-md);
+    cursor: pointer;
+    transition: background 0.15s ease;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.file-item:last-child {
+    border-bottom: none;
+}
+
+.file-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.file-item.active {
+    background: rgba(99, 102, 241, 0.15);
+    border-left: 3px solid var(--accent-blue);
+}
+
+.file-icon {
+    font-size: 1.1rem;
+    width: 24px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.file-name {
+    flex: 1;
+    font-size: 0.85rem;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-size {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.file-download-btn {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.8rem;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+
+.file-download-btn:hover {
+    color: var(--accent-blue);
+    background: rgba(99, 102, 241, 0.15);
+}
+
+/* File Viewer */
+.file-viewer {
+    border-top: 1px solid var(--glass-border);
+    animation: slideDown 0.2s ease;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        max-height: 0;
+    }
+
+    to {
+        opacity: 1;
+        max-height: 600px;
+    }
+}
+
+.file-viewer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-xs) var(--space-md);
+    background: rgba(0, 0, 0, 0.2);
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.file-viewer-name {
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.8rem;
+    color: var(--accent-cyan);
+    font-weight: 600;
+}
+
+.file-viewer-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    transition: all 0.15s;
+}
+
+.file-viewer-close:hover {
+    color: var(--accent-red);
+    background: rgba(239, 68, 68, 0.15);
+}
+
+.file-viewer-content {
+    max-height: 400px;
+    overflow: auto;
+}
+
+/* Code Viewer */
+.code-viewer {
+    position: relative;
+}
+
+.code-lang-badge {
+    position: absolute;
+    top: var(--space-xs);
+    right: var(--space-md);
+    background: rgba(99, 102, 241, 0.2);
+    color: var(--accent-violet);
+    font-size: 0.65rem;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    z-index: 1;
+}
+
+.code-container {
+    display: flex;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    overflow-x: auto;
+}
+
+.line-numbers {
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-sm) var(--space-sm);
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--text-muted);
+    text-align: right;
+    user-select: none;
+    min-width: 40px;
+    border-right: 1px solid var(--glass-border);
+    margin: 0;
+}
+
+.line-num {
+    font-size: 0.7rem;
+    opacity: 0.5;
+}
+
+.code-content {
+    flex: 1;
+    padding: var(--space-sm) var(--space-md);
+    margin: 0;
+    white-space: pre;
+    color: var(--text-primary);
+    background: rgba(0, 0, 0, 0.15);
+}
+
+.code-content code {
+    font-family: inherit;
+    color: #e2e8f0;
+}

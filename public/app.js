@@ -591,15 +591,59 @@
         if (!formContainer) return;
         const project = projects.find(p => p.id === selectedJudgingProject);
         if (!project) return;
-        const [criteria, evals, aiEval] = await Promise.all([
+        const [criteria, evals, aiEval, files] = await Promise.all([
             api.get('/api/criteria'),
             api.get(`/api/evaluations?projectId=${project.id}`),
-            api.get(`/api/projects/${project.id}/ai-evaluation`)
+            api.get(`/api/projects/${project.id}/ai-evaluation`),
+            api.get(`/api/projects/${project.id}/files`)
         ]);
+
+        const fileIconMap = {
+            '.py': '🐍', '.js': '📜', '.ts': '📘', '.jsx': '⚛️', '.tsx': '⚛️',
+            '.java': '☕', '.cpp': '⚙️', '.c': '⚙️', '.go': '🔵', '.rs': '🦀',
+            '.html': '🌐', '.css': '🎨', '.json': '📋', '.yaml': '📋', '.yml': '📋',
+            '.md': '📝', '.txt': '📄', '.pdf': '📕', '.ppt': '📊', '.pptx': '📊',
+            '.doc': '📘', '.docx': '📘', '.png': '🖼️', '.jpg': '🖼️', '.zip': '📦',
+            '.sh': '💻', '.sql': '🗃️'
+        };
+        const getFileIcon = (name) => {
+            const ext = '.' + name.split('.').pop().toLowerCase();
+            return fileIconMap[ext] || '📄';
+        };
+        const formatSize = (bytes) => {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        };
+
         formContainer.innerHTML = `
             <div class="glass-card no-hover">
                 <h2 style="font-size:1.3rem;font-weight:700;margin-bottom:var(--space-xs);">${escHtml(project.name)}</h2>
                 <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:var(--space-lg);">${escHtml(project.description || 'No description')}</p>
+                ${files.length > 0 ? `
+                <div class="file-browser">
+                    <div class="file-browser-header">
+                        <span class="file-browser-title">📁 Project Files <span class="file-count-badge">${files.length}</span></span>
+                        <span class="file-browser-hint">Click a file to view</span>
+                    </div>
+                    <div class="file-list">
+                        ${files.map(f => `
+                            <div class="file-item" data-stored="${escHtml(f.storedName)}" data-name="${escHtml(f.originalName)}">
+                                <span class="file-icon">${getFileIcon(f.originalName)}</span>
+                                <span class="file-name">${escHtml(f.originalName)}</span>
+                                <span class="file-size">${formatSize(f.size)}</span>
+                                <a href="/api/files/${encodeURIComponent(f.storedName)}" target="_blank" class="file-download-btn" title="Download" onclick="event.stopPropagation();">⬇</a>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="file-viewer" id="file-viewer" style="display:none;">
+                        <div class="file-viewer-header">
+                            <span class="file-viewer-name" id="file-viewer-name"></span>
+                            <button class="file-viewer-close" id="file-viewer-close">✕</button>
+                        </div>
+                        <div class="file-viewer-content" id="file-viewer-content"></div>
+                    </div>
+                </div>` : '<div style="color:var(--text-muted);font-size:0.85rem;margin-bottom:var(--space-md);padding:var(--space-md);border:1px dashed var(--glass-border);border-radius:var(--radius-md);text-align:center;">📂 No files uploaded for this project</div>'}
                 <div class="judge-label"><span>👤</span><span class="judge-label-text">Judging as <span class="judge-label-name">${escHtml(currentUser.displayName)}</span></span></div>
                 ${criteria.map(c => `<div class="score-slider-group">
                     <div class="score-slider-header">
@@ -626,6 +670,69 @@
                     <span class="eval-judge-name">${escHtml(ev.judgeName)}</span><span class="eval-date">${timeAgo(ev.createdAt)}</span></div>
                     <div class="score-breakdown">${criteria.map(c => `<div class="score-breakdown-item"><div class="sb-value">${ev.scores[c.id] || 0}</div><div class="sb-label">${escHtml(c.name)}</div></div>`).join('')}</div>
                     ${ev.notes ? `<div class="eval-notes">"${escHtml(ev.notes)}"</div>` : ''}</div>`).join('')}</div>` : ''}`;
+
+        // File browser interactions
+        formContainer.querySelectorAll('.file-item').forEach(item => {
+            item.addEventListener('click', async () => {
+                const storedName = item.dataset.stored;
+                const fileName = item.dataset.name;
+                const viewer = document.getElementById('file-viewer');
+                const viewerName = document.getElementById('file-viewer-name');
+                const viewerContent = document.getElementById('file-viewer-content');
+
+                // Highlight selected file
+                formContainer.querySelectorAll('.file-item').forEach(fi => fi.classList.remove('active'));
+                item.classList.add('active');
+
+                viewerName.textContent = fileName;
+                viewerContent.innerHTML = '<div style="text-align:center;padding:var(--space-lg);color:var(--text-muted);">Loading...</div>';
+                viewer.style.display = 'block';
+
+                try {
+                    const resp = await api.get(`/api/files/${encodeURIComponent(storedName)}/content`);
+                    if (resp.type === 'text') {
+                        const lines = resp.content.split('\n');
+                        const lineNums = lines.map((_, i) => `<span class="line-num">${i + 1}</span>`).join('\n');
+                        const codeContent = lines.map(line => escHtml(line)).join('\n');
+                        viewerContent.innerHTML = `
+                            <div class="code-viewer">
+                                <div class="code-lang-badge">${resp.language}</div>
+                                <div class="code-container">
+                                    <pre class="line-numbers">${lineNums}</pre>
+                                    <pre class="code-content"><code>${codeContent}</code></pre>
+                                </div>
+                                ${resp.truncated ? '<div style="color:var(--accent-amber);padding:var(--space-sm);font-size:0.75rem;">⚠️ File truncated (showing first 100KB)</div>' : ''}
+                            </div>`;
+                    } else {
+                        const ext = fileName.split('.').pop().toLowerCase();
+                        const isImage = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext);
+                        if (isImage) {
+                            viewerContent.innerHTML = `<div style="text-align:center;padding:var(--space-md);">
+                                <img src="/api/files/${encodeURIComponent(storedName)}" style="max-width:100%;max-height:500px;border-radius:var(--radius-md);" alt="${escHtml(fileName)}">
+                            </div>`;
+                        } else {
+                            viewerContent.innerHTML = `<div style="text-align:center;padding:var(--space-xl);color:var(--text-muted);">
+                                <div style="font-size:3rem;margin-bottom:var(--space-md);">${getFileIcon(fileName)}</div>
+                                <div style="margin-bottom:var(--space-sm);">${escHtml(resp.message || 'Binary file')}</div>
+                                <a href="/api/files/${encodeURIComponent(storedName)}" target="_blank" class="btn btn-secondary" style="display:inline-block;">⬇ Download ${escHtml(fileName)}</a>
+                            </div>`;
+                        }
+                    }
+                } catch (err) {
+                    viewerContent.innerHTML = `<div style="color:var(--accent-red);padding:var(--space-md);">Error loading file: ${escHtml(err.message)}</div>`;
+                }
+            });
+        });
+
+        // Close file viewer
+        const closeBtn = document.getElementById('file-viewer-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                document.getElementById('file-viewer').style.display = 'none';
+                formContainer.querySelectorAll('.file-item').forEach(fi => fi.classList.remove('active'));
+            });
+        }
+
         formContainer.querySelectorAll('.score-slider').forEach(slider => {
             slider.addEventListener('input', () => { document.getElementById(`sv-${slider.dataset.criterion}`).textContent = slider.value; });
         });
