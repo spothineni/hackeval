@@ -1,1 +1,12 @@
-node_modules/\nhackathon.db\nhackathon.db-shm\nhackathon.db-wal\nuploads/
+node_modules/
+hackathon.db
+hackathon.db-shm
+hackathon.db-wal
+uploads/
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfvars
+terraform/.terraform.lock.hcl
