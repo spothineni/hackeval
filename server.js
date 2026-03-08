@@ -15,8 +15,9 @@ const BEDROCK_MODEL = process.env.BEDROCK_MODEL || 'us.anthropic.claude-sonnet-4
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ─── Uploads Directory ──────────────────────────────────────
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
+// ─── Data Directory (persistent disk on Render, local otherwise) ────
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 // ─── Multer Config ──────────────────────────────────────────
@@ -48,7 +49,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ─── Database Setup ─────────────────────────────────────────
-const db = new Database(path.join(__dirname, 'hackathon.db'));
+const db = new Database(path.join(DATA_DIR, 'hackathon.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 

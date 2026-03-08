@@ -1,0 +1,23 @@
+# Render.com Blueprint — HackEval
+# Deploy: https://render.com/deploy?repo=https://github.com/spothineni/hackeval
+
+services:
+  - type: web
+    name: hackeval
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PORT
+        value: 3000
+      - key: DATA_DIR
+        value: /opt/render/project/src/data
+    disk:
+      name: hackeval-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
