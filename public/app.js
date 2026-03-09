@@ -216,6 +216,41 @@
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
+    function getFileIcon(name) {
+        const ext = (name.split('.').pop() || '').toLowerCase();
+        const icons = {
+            py: '🐍', js: '📜', ts: '📜', jsx: '📜', tsx: '📜',
+            java: '☕', cpp: '⚙️', c: '⚙️', h: '⚙️', go: '🔵', rs: '🦀',
+            html: '🌐', css: '🎨', json: '📋', yaml: '📋', yml: '📋', xml: '📋',
+            md: '📝', txt: '📄', pdf: '📕', pptx: '📊', ppt: '📊', docx: '📘', doc: '📘',
+            png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', svg: '🖼️',
+            zip: '📦', sh: '💻', sql: '🗄️', rb: '💎', php: '🐘',
+            vue: '💚', svelte: '🧡', swift: '🍎', kt: '🟣'
+        };
+        return icons[ext] || '📄';
+    }
+
+    // Recursively read files from a dropped folder via webkitGetAsEntry()
+    async function getAllFilesFromDrop(items) {
+        const files = [];
+        const readEntry = (entry) => new Promise((resolve) => {
+            if (entry.isFile) {
+                entry.file(f => { files.push(f); resolve(); });
+            } else if (entry.isDirectory) {
+                const reader = entry.createReader();
+                reader.readEntries(async entries => {
+                    for (const e of entries) await readEntry(e);
+                    resolve();
+                });
+            } else { resolve(); }
+        });
+        for (let i = 0; i < items.length; i++) {
+            const entry = items[i].webkitGetAsEntry();
+            if (entry) await readEntry(entry);
+        }
+        return files;
+    }
+
     function escHtml(str) {
         const div = document.createElement('div');
         div.textContent = str;
@@ -455,11 +490,17 @@
             ${isEdit ? `<div class="form-group"><label class="form-label">📁 Project Files</label>
                 <div class="file-dropzone" id="pm-dropzone">
                     <div class="file-dropzone-icon">📂</div>
-                    <div class="file-dropzone-text">Drop files here or click to upload</div>
-                    <div class="file-dropzone-hint">Max 5 files, 10MB each • README, code, docs, images</div>
+                    <div class="file-dropzone-text">Drop files, folders, or a ZIP here</div>
+                    <div class="file-dropzone-hint">Up to 50 files, 50MB max • ZIP files auto-extracted</div>
+                    <div style="margin-top:8px;display:flex;gap:8px;justify-content:center;">
+                        <button type="button" class="btn btn-secondary btn-sm" id="pm-select-files">📄 Files</button>
+                        <button type="button" class="btn btn-secondary btn-sm" id="pm-select-folder">📁 Folder</button>
+                    </div>
                 </div>
-                <input type="file" id="pm-file-input" multiple style="display:none;" accept=".txt,.md,.pdf,.py,.js,.ts,.java,.cpp,.c,.go,.rs,.html,.css,.json,.yaml,.yml,.xml,.csv,.png,.jpg,.jpeg,.gif,.svg,.pptx,.docx,.zip">
+                <input type="file" id="pm-file-input" multiple style="display:none;">
+                <input type="file" id="pm-folder-input" webkitdirectory style="display:none;">
                 <div class="file-list" id="pm-file-list"></div></div>` : '<p style="font-size:0.8rem;color:var(--text-muted);margin-top:var(--space-sm);">💡 Save the project first, then edit it to upload files.</p>'}`;
+
         const footer = `<button class="btn btn-secondary" id="pm-cancel">Cancel</button>
             <button class="btn btn-primary" id="pm-save">${isEdit ? 'Update' : 'Add'} Project</button>`;
         openModal(isEdit ? 'Edit Project' : 'Add Project', body, footer);
@@ -489,6 +530,7 @@
     async function setupFileUpload(projectId) {
         const dropzone = document.getElementById('pm-dropzone');
         const fileInput = document.getElementById('pm-file-input');
+        const folderInput = document.getElementById('pm-folder-input');
         const fileList = document.getElementById('pm-file-list');
         if (!dropzone) return;
 
@@ -496,8 +538,8 @@
             const files = await api.get(`/api/projects/${projectId}/files`);
             fileList.innerHTML = files.map(f => `
                 <div class="file-item">
-                    <span>📄</span>
-                    <span class="file-item-name">${escHtml(f.originalName)}</span>
+                    <span>${getFileIcon(f.originalName)}</span>
+                    <span class="file-item-name" title="${escHtml(f.originalName)}">${escHtml(f.originalName)}</span>
                     <span class="file-item-size">${formatBytes(f.size)}</span>
                     <button class="file-item-remove" data-id="${f.id}" title="Remove">×</button>
                 </div>`).join('');
@@ -510,19 +552,40 @@
             });
         }
 
-        dropzone.addEventListener('click', () => fileInput.click());
+        async function uploadFiles(files) {
+            if (files.length) {
+                dropzone.querySelector('.file-dropzone-text').textContent = `Uploading ${files.length} file(s)...`;
+                await api.uploadFiles(`/api/projects/${projectId}/files`, files);
+                dropzone.querySelector('.file-dropzone-text').textContent = 'Drop files, folders, or a ZIP here';
+                showToast(`${files.length} file(s) uploaded`);
+                refreshFiles();
+            }
+        }
+
+        document.getElementById('pm-select-files')?.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
+        document.getElementById('pm-select-folder')?.addEventListener('click', (e) => { e.stopPropagation(); folderInput.click(); });
+        dropzone.addEventListener('click', (e) => { if (e.target === dropzone || e.target.closest('.file-dropzone-icon,.file-dropzone-text,.file-dropzone-hint')) fileInput.click(); });
         dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
         dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
         dropzone.addEventListener('drop', async e => {
             e.preventDefault();
             dropzone.classList.remove('dragover');
-            const files = Array.from(e.dataTransfer.files);
-            if (files.length) { await api.uploadFiles(`/api/projects/${projectId}/files`, files); showToast('Files uploaded'); refreshFiles(); }
+            const items = e.dataTransfer.items;
+            if (items && items[0] && items[0].webkitGetAsEntry) {
+                const allFiles = await getAllFilesFromDrop(items);
+                await uploadFiles(allFiles);
+            } else {
+                const files = Array.from(e.dataTransfer.files);
+                await uploadFiles(files);
+            }
         });
         fileInput.addEventListener('change', async () => {
-            const files = Array.from(fileInput.files);
-            if (files.length) { await api.uploadFiles(`/api/projects/${projectId}/files`, files); showToast('Files uploaded'); refreshFiles(); }
+            await uploadFiles(Array.from(fileInput.files));
             fileInput.value = '';
+        });
+        folderInput.addEventListener('change', async () => {
+            await uploadFiles(Array.from(folderInput.files));
+            folderInput.value = '';
         });
 
         refreshFiles();
@@ -992,10 +1055,15 @@
                     <h3 style="font-size:1rem;font-weight:700;margin-bottom:var(--space-md);">📁 Project Files</h3>
                     <div class="file-dropzone" id="mp-dropzone">
                         <div class="file-dropzone-icon">📂</div>
-                        <div class="file-dropzone-text">Drop files here or click to upload</div>
-                        <div class="file-dropzone-hint">Max 5 files, 10MB each • README, code, docs, images</div>
+                        <div class="file-dropzone-text">Drop files, folders, or a ZIP here</div>
+                        <div class="file-dropzone-hint">Up to 50 files, 50MB max • ZIP files auto-extracted</div>
+                        <div style="margin-top:8px;display:flex;gap:8px;justify-content:center;">
+                            <button type="button" class="btn btn-secondary btn-sm" id="mp-select-files">📄 Files</button>
+                            <button type="button" class="btn btn-secondary btn-sm" id="mp-select-folder">📁 Folder</button>
+                        </div>
                     </div>
-                    <input type="file" id="mp-file-input" multiple style="display:none;" accept=".txt,.md,.pdf,.py,.js,.ts,.java,.cpp,.c,.go,.rs,.html,.css,.json,.yaml,.yml,.xml,.csv,.png,.jpg,.jpeg,.gif,.svg,.pptx,.docx,.zip">
+                    <input type="file" id="mp-file-input" multiple style="display:none;">
+                    <input type="file" id="mp-folder-input" webkitdirectory style="display:none;">
                     <div class="file-list" id="mp-file-list"></div>
                 </div>
                 ${aiEval ? `<div class="ai-eval-card">
@@ -1006,14 +1074,15 @@
             // Setup file upload for own project
             const dropzone = document.getElementById('mp-dropzone');
             const fileInput = document.getElementById('mp-file-input');
+            const folderInput = document.getElementById('mp-folder-input');
             const fileList = document.getElementById('mp-file-list');
 
             async function refreshFiles() {
                 const updatedFiles = await api.get(`/api/projects/${myProject.id}/files`);
                 fileList.innerHTML = updatedFiles.map(f => `
                     <div class="file-item">
-                        <span>📄</span>
-                        <span class="file-item-name">${escHtml(f.originalName)}</span>
+                        <span>${getFileIcon(f.originalName)}</span>
+                        <span class="file-item-name" title="${escHtml(f.originalName)}">${escHtml(f.originalName)}</span>
                         <span class="file-item-size">${formatBytes(f.size)}</span>
                         <button class="file-item-remove" data-id="${f.id}" title="Remove">×</button>
                     </div>`).join('');
@@ -1026,18 +1095,38 @@
                 });
             }
 
-            dropzone.addEventListener('click', () => fileInput.click());
+            async function uploadMyFiles(files) {
+                if (files.length) {
+                    dropzone.querySelector('.file-dropzone-text').textContent = `Uploading ${files.length} file(s)...`;
+                    await api.uploadFiles(`/api/projects/${myProject.id}/files`, files);
+                    dropzone.querySelector('.file-dropzone-text').textContent = 'Drop files, folders, or a ZIP here';
+                    showToast(`${files.length} file(s) uploaded`);
+                    refreshFiles();
+                }
+            }
+
+            document.getElementById('mp-select-files')?.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
+            document.getElementById('mp-select-folder')?.addEventListener('click', (e) => { e.stopPropagation(); folderInput.click(); });
+            dropzone.addEventListener('click', (e) => { if (e.target === dropzone || e.target.closest('.file-dropzone-icon,.file-dropzone-text,.file-dropzone-hint')) fileInput.click(); });
             dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
             dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
             dropzone.addEventListener('drop', async e => {
                 e.preventDefault(); dropzone.classList.remove('dragover');
-                const droppedFiles = Array.from(e.dataTransfer.files);
-                if (droppedFiles.length) { await api.uploadFiles(`/api/projects/${myProject.id}/files`, droppedFiles); showToast('Files uploaded'); refreshFiles(); }
+                const items = e.dataTransfer.items;
+                if (items && items[0] && items[0].webkitGetAsEntry) {
+                    const allFiles = await getAllFilesFromDrop(items);
+                    await uploadMyFiles(allFiles);
+                } else {
+                    await uploadMyFiles(Array.from(e.dataTransfer.files));
+                }
             });
             fileInput.addEventListener('change', async () => {
-                const selectedFiles = Array.from(fileInput.files);
-                if (selectedFiles.length) { await api.uploadFiles(`/api/projects/${myProject.id}/files`, selectedFiles); showToast('Files uploaded'); refreshFiles(); }
+                await uploadMyFiles(Array.from(fileInput.files));
                 fileInput.value = '';
+            });
+            folderInput.addEventListener('change', async () => {
+                await uploadMyFiles(Array.from(folderInput.files));
+                folderInput.value = '';
             });
             refreshFiles();
 

@@ -6,6 +6,7 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
+const AdmZip = require('adm-zip');
 const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'hackathon-eval-secret-key-change-in-production';
@@ -30,13 +31,15 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
     storage,
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB (for zips)
     fileFilter: (req, file, cb) => {
-        const allowed = ['.txt', '.md', '.pdf', '.py', '.js', '.ts', '.java', '.cpp', '.c', '.go', '.rs',
-            '.html', '.css', '.json', '.yaml', '.yml', '.xml', '.csv', '.png', '.jpg', '.jpeg',
-            '.gif', '.svg', '.pptx', '.docx', '.zip'];
+        const allowed = ['.txt', '.md', '.pdf', '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h',
+            '.go', '.rs', '.html', '.css', '.json', '.yaml', '.yml', '.xml', '.csv', '.png', '.jpg', '.jpeg',
+            '.gif', '.svg', '.pptx', '.ppt', '.docx', '.doc', '.zip', '.sh', '.sql', '.rb', '.php',
+            '.swift', '.kt', '.scala', '.r', '.vue', '.svelte', '.toml', '.ini', '.cfg', '.env',
+            '.dockerfile', '.makefile', '.gitignore', '.lock', '.mod', '.sum', '.gradle', '.xml'];
         const ext = path.extname(file.originalname).toLowerCase();
-        cb(null, allowed.includes(ext));
+        cb(null, allowed.includes(ext) || ext === '');
     }
 });
 
@@ -404,26 +407,74 @@ app.delete('/api/projects/:id', requireAuth, requireProjectOwnerOrAdmin, (req, r
 // PROJECT FILES (Upload / Download)
 // ═══════════════════════════════════════════════════════════
 
-app.post('/api/projects/:id/files', requireAuth, requireProjectOwnerOrAdmin, upload.array('files', 5), (req, res) => {
+app.post('/api/projects/:id/files', requireAuth, requireProjectOwnerOrAdmin, upload.array('files', 50), (req, res) => {
     const projectId = req.params.id;
     const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const existingCount = db.prepare('SELECT COUNT(*) as cnt FROM project_files WHERE project_id = ?').get(projectId).cnt;
-    if (existingCount + (req.files || []).length > 5) {
-        // Clean up just-uploaded files
-        (req.files || []).forEach(f => fs.unlinkSync(f.path));
-        return res.status(400).json({ error: 'Max 5 files per project' });
-    }
-
     const ins = db.prepare('INSERT INTO project_files (id, project_id, original_name, stored_name, mime_type, size) VALUES (?, ?, ?, ?, ?, ?)');
-    const inserted = (req.files || []).map(f => {
-        const id = uuid();
-        ins.run(id, projectId, f.originalname, f.filename, f.mimetype, f.size);
-        return { id, originalName: f.originalname, size: f.size };
-    });
+    const inserted = [];
+
+    for (const f of (req.files || [])) {
+        const ext = path.extname(f.originalname).toLowerCase();
+
+        if (ext === '.zip') {
+            // Extract zip and store each file
+            try {
+                const zip = new AdmZip(f.path);
+                const entries = zip.getEntries();
+                for (const entry of entries) {
+                    if (entry.isDirectory) continue;
+                    // Skip hidden files, __MACOSX, node_modules
+                    const entryName = entry.entryName;
+                    if (entryName.startsWith('__MACOSX') || entryName.includes('node_modules/') ||
+                        entryName.includes('.git/') || entryName.startsWith('.')) continue;
+
+                    const data = entry.getData();
+                    if (!data || data.length === 0) continue;
+                    if (data.length > 10 * 1024 * 1024) continue; // skip files > 10MB inside zip
+
+                    const storedName = `${Date.now()}-${Math.round(Math.random() * 1e6)}${path.extname(entryName)}`;
+                    const destPath = path.join(UPLOADS_DIR, storedName);
+                    fs.writeFileSync(destPath, data);
+
+                    const id = uuid();
+                    const mimeType = getMimeType(entryName);
+                    ins.run(id, projectId, entryName, storedName, mimeType, data.length);
+                    inserted.push({ id, originalName: entryName, size: data.length });
+                }
+                // Remove the uploaded zip file
+                fs.unlinkSync(f.path);
+            } catch (err) {
+                console.error('Zip extraction error:', err);
+                // If zip fails, store it as-is
+                const id = uuid();
+                ins.run(id, projectId, f.originalname, f.filename, f.mimetype, f.size);
+                inserted.push({ id, originalName: f.originalname, size: f.size });
+            }
+        } else {
+            // Regular file — preserve relative path if sent via webkitdirectory
+            const originalName = f.originalname;
+            const id = uuid();
+            ins.run(id, projectId, originalName, f.filename, f.mimetype, f.size);
+            inserted.push({ id, originalName, size: f.size });
+        }
+    }
     res.json({ files: inserted });
 });
+
+function getMimeType(filename) {
+    const ext = path.extname(filename).toLowerCase();
+    const types = {
+        '.txt': 'text/plain', '.md': 'text/markdown', '.py': 'text/x-python',
+        '.js': 'application/javascript', '.ts': 'text/typescript', '.html': 'text/html',
+        '.css': 'text/css', '.json': 'application/json', '.xml': 'application/xml',
+        '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+        '.zip': 'application/zip', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    };
+    return types[ext] || 'application/octet-stream';
+}
 
 app.get('/api/projects/:id/files', requireAuth, (req, res) => {
     const rows = db.prepare('SELECT * FROM project_files WHERE project_id = ? ORDER BY created_at').all(req.params.id);

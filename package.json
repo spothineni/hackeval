@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1003.0",
+    "adm-zip": "^0.5.16",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
