@@ -29,8 +29,9 @@ variable "instance_type" {
 }
 
 variable "key_pair_name" {
-  description = "Name of the EC2 key pair for SSH access"
+  description = "Name of the EC2 key pair for SSH access (optional — use SSM Session Manager instead)"
   type        = string
+  default     = ""
 }
 
 variable "app_port" {
@@ -46,7 +47,7 @@ variable "enable_https" {
 }
 
 variable "allowed_ssh_cidr" {
-  description = "CIDR block allowed to SSH into EC2 (default: open, restrict for production)"
+  description = "CIDR block allowed to SSH into EC2 (only used if key_pair_name is set)"
   type        = string
   default     = "0.0.0.0/0"
 }

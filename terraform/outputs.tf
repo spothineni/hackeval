@@ -27,9 +27,14 @@ output "ec2_instance_id" {
   value       = aws_instance.app.id
 }
 
+output "ssm_connect_command" {
+  description = "Connect to EC2 via SSM Session Manager (no SSH key needed)"
+  value       = "aws ssm start-session --target ${aws_instance.app.id}"
+}
+
 output "ssh_command" {
-  description = "SSH command to connect to the server"
-  value       = "ssh -i ~/.ssh/${var.key_pair_name}.pem ec2-user@${aws_eip.app.public_ip}"
+  description = "SSH command (only if key_pair_name was set)"
+  value       = var.key_pair_name != "" ? "ssh -i ~/.ssh/${var.key_pair_name}.pem ec2-user@${aws_eip.app.public_ip}" : "N/A — use SSM: aws ssm start-session --target ${aws_instance.app.id}"
 }
 
 output "nameservers" {

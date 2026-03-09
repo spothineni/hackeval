@@ -1,9 +1,7 @@
 # ═══════════════════════════════════════════════════════════
 # Example tfvars — copy to terraform.tfvars and customize
 # ═══════════════════════════════════════════════════════════
-
-# Required: EC2 key pair for SSH access (must exist in AWS)
-key_pair_name = "my-key-pair"
+# No required variables! Just run: terraform init && terraform apply
 
 # Optional: AWS region (default: us-east-1)
 # aws_region = "us-east-1"
@@ -11,12 +9,16 @@ key_pair_name = "my-key-pair"
 # Optional: Instance type (default: t3.small)
 # instance_type = "t3.small"
 
-# Optional: Restrict SSH to your IP (recommended for production)
+# ─── SSH Access (OPTIONAL) ────────────────────────────────
+# By default, access is via SSM Session Manager (no key pair needed).
+# Uncomment to also enable SSH:
+#
+# key_pair_name  = "my-key-pair"
 # allowed_ssh_cidr = "203.0.113.0/32"
 
-# ─── Domain Setup (OPTIONAL) ─────────────────────────────
-# Leave these commented out to use the ALB DNS name directly.
-# Uncomment and set to use a custom domain with HTTPS.
+# ─── Domain + HTTPS (OPTIONAL) ───────────────────────────
+# By default, app is accessible via ALB DNS name (http only).
+# Uncomment for custom domain with HTTPS:
 #
 # domain_name      = "hackeval.example.com"
 # hosted_zone_name = "example.com"

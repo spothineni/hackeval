@@ -7,13 +7,16 @@ resource "aws_security_group" "ec2" {
   description = "Security group for HackEval EC2 instance"
   vpc_id      = aws_vpc.main.id
 
-  # SSH access
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_ssh_cidr]
+  # SSH access (only if key pair is configured)
+  dynamic "ingress" {
+    for_each = var.key_pair_name != "" ? [1] : []
+    content {
+      description = "SSH"
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = [var.allowed_ssh_cidr]
+    }
   }
 
   # App port (direct access, useful for testing)
