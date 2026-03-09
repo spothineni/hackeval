@@ -1,0 +1,10 @@
+node_modules
+.git
+uploads
+hackathon.db
+hackathon.db-shm
+hackathon.db-wal
+terraform
+.gitignore
+README.md
+render.yaml
