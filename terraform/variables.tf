@@ -11,8 +11,9 @@ variable "project_name" {
 }
 
 variable "domain_name" {
-  description = "Domain name for the application (e.g. hackeval.example.com)"
+  description = "Domain name for the application (e.g. hackeval.example.com). Leave empty to skip DNS setup."
   type        = string
+  default     = ""
 }
 
 variable "hosted_zone_name" {
@@ -39,9 +40,9 @@ variable "app_port" {
 }
 
 variable "enable_https" {
-  description = "Enable HTTPS with ACM certificate and ALB"
+  description = "Enable HTTPS with ACM certificate and ALB (requires domain_name)"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "allowed_ssh_cidr" {

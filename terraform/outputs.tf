@@ -3,18 +3,23 @@
 # ═══════════════════════════════════════════════════════════
 
 output "app_url" {
-  description = "Application URL"
-  value       = var.enable_https ? "https://${var.domain_name}" : "http://${var.domain_name}"
+  description = "Application URL (ALB DNS name or custom domain)"
+  value       = var.domain_name != "" ? (var.enable_https ? "https://${var.domain_name}" : "http://${var.domain_name}") : "http://${aws_lb.app.dns_name}"
 }
 
 output "alb_dns_name" {
-  description = "ALB DNS name (for CNAME if using external DNS)"
-  value       = aws_lb.app.dns_name
+  description = "ALB DNS name — use this URL if no custom domain"
+  value       = "http://${aws_lb.app.dns_name}"
 }
 
 output "ec2_public_ip" {
   description = "EC2 Elastic IP address"
   value       = aws_eip.app.public_ip
+}
+
+output "ec2_direct_url" {
+  description = "Direct EC2 access (bypasses ALB)"
+  value       = "http://${aws_eip.app.public_ip}:3000"
 }
 
 output "ec2_instance_id" {
@@ -29,5 +34,5 @@ output "ssh_command" {
 
 output "nameservers" {
   description = "Nameservers (only if a new hosted zone was created)"
-  value       = var.hosted_zone_name == "" ? aws_route53_zone.new[0].name_servers : []
+  value       = var.domain_name != "" && var.hosted_zone_name == "" ? aws_route53_zone.new[0].name_servers : []
 }
