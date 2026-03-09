@@ -15,9 +15,3 @@ services:
         generateValue: true
       - key: PORT
         value: 3000
-      - key: DATA_DIR
-        value: /opt/render/project/src/data
-    disk:
-      name: hackeval-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
