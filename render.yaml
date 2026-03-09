@@ -6,7 +6,7 @@ services:
     name: hackeval
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && npm rebuild better-sqlite3
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
