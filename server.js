@@ -915,11 +915,11 @@ app.put('/api/users/:id/role', requireAuth, requireSystemAdmin, asyncHandler(asy
     res.json({ success: true });
 }));
 
-// Promote / demote between system-admin and regular user.
+// Promote / demote between system-level roles.
 app.put('/api/users/:id/system-role', requireAuth, requireSystemAdmin, asyncHandler(async (req, res) => {
     const { systemRole } = req.body || {};
-    if (!['user', 'system_admin'].includes(systemRole)) {
-        return res.status(400).json({ error: 'systemRole must be user or system_admin' });
+    if (!['user', 'organizer', 'system_admin'].includes(systemRole)) {
+        return res.status(400).json({ error: 'systemRole must be user, organizer, or system_admin' });
     }
     if (req.user.id === req.params.id) {
         return res.status(400).json({ error: 'Cannot change your own system role' });
