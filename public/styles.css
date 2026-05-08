@@ -523,6 +523,10 @@ body {
 .role-badge-admin { background: var(--accent-amber-dim); color: var(--accent-amber); }
 .role-badge-judge { background: rgba(6,182,212,0.12); color: var(--accent-cyan); }
 .role-badge-participant { background: var(--accent-emerald-dim); color: var(--accent-emerald); }
+/* System role badges (Settings → User Management) */
+.role-badge-user         { background: rgba(255,255,255,0.06); color: var(--text-secondary); }
+.role-badge-organizer    { background: var(--accent-indigo-dim); color: var(--accent-indigo); }
+.role-badge-system_admin { background: var(--accent-red-dim); color: var(--accent-red); }
 
 /* --- User Management --- */
 .users-list { display: flex; flex-direction: column; gap: var(--space-xs); }
@@ -943,6 +947,30 @@ body {
 }
 .landing-footer-links a:hover { color: var(--text-primary); }
 .landing-footer-tag { font-family: var(--font-mono); font-size: 0.75rem; }
+
+/* ── Auth checkbox row (register-only) ── */
+.auth-checkbox-row {
+    padding: 10px 12px;
+    background: rgba(99,102,241,0.05);
+    border: 1px solid rgba(99,102,241,0.18);
+    border-radius: var(--radius-md);
+}
+.auth-checkbox {
+    display: flex; align-items: center; gap: 10px;
+    cursor: pointer; user-select: none;
+    font-size: 0.85rem; color: var(--text-primary);
+    font-weight: 500;
+}
+.auth-checkbox input[type="checkbox"] {
+    width: 16px; height: 16px;
+    accent-color: var(--accent-indigo);
+    cursor: pointer;
+}
+.auth-help {
+    margin-top: 6px;
+    color: var(--text-muted); font-size: 0.75rem;
+    line-height: 1.5; padding-left: 26px;
+}
 
 /* ── Auth back link ── */
 .auth-back {

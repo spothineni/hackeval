@@ -411,9 +411,16 @@ app.post('/api/auth/register', authLimiter, asyncHandler(async (req, res) => {
     const hash = bcrypt.hashSync(password, 10);
     const id = uuid();
     const role = 'participant';
-    const systemRole = 'user';
+    // Self-claim "organizer" at registration. Their hackathons still need
+    // admin approval before going live, so the damage is bounded.
+    const wantsOrganizer = req.body?.wantsOrganizer === true;
+    const systemRole = wantsOrganizer ? 'organizer' : 'user';
     await db.run('INSERT INTO users (id, username, email, password_hash, role, display_name, system_role) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, username, email, hash, role, displayName, systemRole]);
-    await audit({ actorUserId: id, actorUsername: username, ip: req.ip, action: 'user.register', targetType: 'user', targetId: id });
+    await audit({
+        actorUserId: id, actorUsername: username, ip: req.ip,
+        action: 'user.register', targetType: 'user', targetId: id,
+        payload: { systemRole },
+    });
     const token = jwt.sign({ id, username, role, displayName, systemRole }, JWT_SECRET, { expiresIn: '7d' });
     setAuthCookies(res, token);
     // Token is also returned in the body for non-browser clients (curl / scripts).

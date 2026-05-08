@@ -7,6 +7,9 @@
     <meta name="description"
         content="HackEval — AI-powered hackathon evaluation and management platform. Score, rank, and manage submissions.">
     <title>HackEval — AI-Powered Hackathon Platform</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="apple-touch-icon" href="favicon.svg">
+    <meta name="theme-color" content="#6366F1">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
@@ -233,6 +236,13 @@
                     <label class="form-label" for="auth-displayname">Display Name</label>
                     <input class="form-input" id="auth-displayname" placeholder="How others will see you"
                         autocomplete="name">
+                </div>
+                <div class="form-group auth-register-field auth-checkbox-row" id="auth-organizer-group" style="display:none;">
+                    <label class="auth-checkbox">
+                        <input type="checkbox" id="auth-wants-organizer">
+                        <span>I want to organize hackathons</span>
+                    </label>
+                    <div class="auth-help">Organizers create events; an admin reviews each one before it goes live.</div>
                 </div>
                 <div id="auth-error" class="auth-error" style="display:none;"></div>
                 <button type="submit" class="btn btn-primary auth-submit" id="auth-submit">Sign In</button>

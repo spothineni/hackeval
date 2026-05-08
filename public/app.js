@@ -87,6 +87,10 @@
         // signature for backwards compat with the login response shape.
         currentUser = user;
         updateUserUI();
+        // Switch to the authenticated shell immediately so the user sees
+        // they're signed in. The hackathon picker (if any) opens on top
+        // of it once the membership list comes back.
+        showAppShell(true);
         await loadAndSelectHackathon();
     }
 
@@ -409,15 +413,18 @@
 
     async function checkAuth() {
         // Cookie is HttpOnly so we can't peek at it from JS — just ask the
-        // server who we are. 401 means no valid session, show login.
+        // server who we are. 401 means no valid session, show landing.
         try {
             const user = await api.get('/api/auth/me');
             currentUser = user;
             updateUserUI();
+            showAppShell(true);
             await loadAndSelectHackathon();
         } catch (e) {
             // /api/auth/me 401 throws "Session expired" — that's the expected
-            // unauthenticated state on first load; just show the auth screen.
+            // unauthenticated state on first load; just show the landing page.
+            // (Note: api wrapper already called logout on 401 which set the
+            // view to landing; this is belt-and-braces.)
             showAppShell(false);
         }
     }
@@ -447,9 +454,11 @@
             try {
                 if (authMode === 'login') {
                     const res = await api.post('/api/auth/login', { username, password });
-                    setAuth(res.token, res.user);
                     showToast(`Welcome back, ${res.user.displayName}!`);
-                    handleRoute();
+                    // Await — setAuth now switches the view and loads the
+                    // user's hackathons. Calling handleRoute here too races
+                    // with selectHackathon's own handleRoute call.
+                    await setAuth(res.token, res.user);
                 } else {
                     const email = document.getElementById('auth-email').value.trim();
                     const displayName = document.getElementById('auth-displayname').value.trim();
@@ -458,10 +467,14 @@
                         errorEl.style.display = 'block';
                         return;
                     }
-                    const res = await api.post('/api/auth/register', { username, email, password, displayName });
-                    setAuth(res.token, res.user);
-                    showToast(`Welcome, ${res.user.displayName}! Account created.`);
-                    handleRoute();
+                    const wantsOrganizer = document.getElementById('auth-wants-organizer')?.checked === true;
+                    const res = await api.post('/api/auth/register', { username, email, password, displayName, wantsOrganizer });
+                    showToast(
+                        wantsOrganizer
+                            ? `Welcome, ${res.user.displayName}! You're now an organizer.`
+                            : `Welcome, ${res.user.displayName}! Account created.`
+                    );
+                    await setAuth(res.token, res.user);
                 }
             } catch (err) {
                 errorEl.textContent = err.message;
@@ -1259,8 +1272,11 @@
         if (!isAdmin()) { navigate('dashboard'); return; }
         container.innerHTML = '<div class="page-header"><h1>Settings</h1><p class="subtitle">Loading...</p></div>';
         try {
+            // /api/users is system_admin-only; skip the fetch for hackathon
+            // admins who aren't system admins so they don't see a 403 toast.
+            const userListPromise = isSystemAdmin() ? api.get('/api/users') : Promise.resolve([]);
             const [settings, criteria, users] = await Promise.all([
-                api.get('/api/settings'), api.get('/api/criteria'), api.get('/api/users')
+                api.get('/api/settings'), api.get('/api/criteria'), userListPromise,
             ]);
             const aiWeightVal = settings.aiWeight ? parseFloat(settings.aiWeight) : 0.4;
             container.innerHTML = `
@@ -1278,9 +1294,10 @@
                     <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:var(--space-md);">Customize scoring criteria and weights</p>
                     <div class="criteria-list" id="criteria-list"></div>
                     <div style="margin-top:var(--space-md);"><button class="btn btn-secondary btn-sm" id="btn-add-criterion">+ Add Criterion</button></div></div>
+                ${isSystemAdmin() ? `
                 <div class="glass-card no-hover settings-section"><h3>👥 User Management</h3>
-                    <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:var(--space-md);">${users.length} registered user${users.length !== 1 ? 's' : ''}</p>
-                    <div class="users-list" id="users-list"></div></div>
+                    <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:var(--space-md);">${users.length} registered user${users.length !== 1 ? 's' : ''} · system roles control who can create and approve hackathons</p>
+                    <div class="users-list" id="users-list"></div></div>` : ''}
                 <div class="glass-card no-hover settings-section"><h3>Data Management</h3>
                     <div class="btn-group">
                         <button class="btn btn-secondary" id="set-export">📥 Export Data</button>
@@ -1363,20 +1380,43 @@
     function renderUsersList(users) {
         const list = document.getElementById('users-list');
         if (!list) return;
-        list.innerHTML = users.map(u => `<div class="user-list-item">
-            <div class="user-list-avatar">${escHtml(u.displayName.charAt(0))}</div>
-            <div class="user-list-info"><div class="user-list-name">${escHtml(u.displayName)} <span class="role-badge role-badge-${u.role}">${u.role}</span></div>
-                <div class="user-list-email">${escHtml(u.email)} · @${escHtml(u.username)}</div></div>
-            <select class="form-select btn-sm user-role-select" data-id="${u.id}" data-current="${u.role}" style="width:auto;padding:4px 28px 4px 8px;font-size:0.75rem;" ${u.id === currentUser.id ? 'disabled' : ''}>
-                <option value="participant" ${u.role === 'participant' ? 'selected' : ''}>Participant</option>
-                <option value="judge" ${u.role === 'judge' ? 'selected' : ''}>Judge</option>
-                <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select>
-            ${u.id !== currentUser.id ? `<button class="btn btn-danger btn-sm btn-del-user" data-id="${u.id}" data-name="${escAttr(u.displayName)}">🗑️</button>` : '<span style="width:36px;"></span>'}
-        </div>`).join('');
-        list.querySelectorAll('.user-role-select').forEach(sel => {
+        // Per-hackathon roles (admin / judge / participant) are managed inside
+        // each hackathon's Members panel. This list edits the SYSTEM role —
+        // the platform-wide capability that controls who can create
+        // hackathons (organizer) and who can approve them (system_admin).
+        const sysRoleOptions = [
+            ['user', 'User'],
+            ['organizer', 'Organizer'],
+            ['system_admin', 'System Admin'],
+        ];
+        list.innerHTML = users.map(u => {
+            const sr = u.systemRole || 'user';
+            return `<div class="user-list-item">
+                <div class="user-list-avatar">${escHtml(u.displayName.charAt(0))}</div>
+                <div class="user-list-info">
+                    <div class="user-list-name">${escHtml(u.displayName)}
+                        <span class="role-badge role-badge-${escAttr(sr)}">${escHtml(sr.replace('_', ' '))}</span>
+                    </div>
+                    <div class="user-list-email">${escHtml(u.email)} · @${escHtml(u.username)}</div>
+                </div>
+                <select class="form-select btn-sm user-system-role-select" data-id="${u.id}" data-current="${escAttr(sr)}"
+                        style="width:auto;padding:4px 28px 4px 8px;font-size:0.75rem;"
+                        ${u.id === currentUser.id ? 'disabled title="You cannot change your own system role"' : ''}>
+                    ${sysRoleOptions.map(([v, label]) => `<option value="${v}" ${sr === v ? 'selected' : ''}>${label}</option>`).join('')}
+                </select>
+                ${u.id !== currentUser.id ? `<button class="btn btn-danger btn-sm btn-del-user" data-id="${u.id}" data-name="${escAttr(u.displayName)}">🗑️</button>` : '<span style="width:36px;"></span>'}
+            </div>`;
+        }).join('');
+        list.querySelectorAll('.user-system-role-select').forEach(sel => {
             sel.addEventListener('change', async () => {
-                try { await api.put(`/api/users/${sel.dataset.id}/role`, { role: sel.value }); showToast('Role updated'); renderUsersList(await api.get('/api/users')); }
-                catch (err) { showToast(err.message, 'error'); sel.value = sel.dataset.current; }
+                try {
+                    await api.put(`/api/users/${sel.dataset.id}/system-role`, { systemRole: sel.value });
+                    showToast('System role updated');
+                    renderUsersList(await api.get('/api/users'));
+                } catch (err) {
+                    showToast(err.message, 'error');
+                    sel.value = sel.dataset.current;
+                }
             });
         });
         list.querySelectorAll('.btn-del-user').forEach(btn => {
