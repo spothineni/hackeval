@@ -118,9 +118,11 @@ if (!corsOriginEnv) {
 }
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
+// ─── Hackathon helpers ───────────────────────────────────────
+const { parseHackathonId, requireHackathonRole, requireSystemAdmin, requireActiveHackathon, getMembershipRole } = buildHackathonHelpers({ db });
+
 app.use(cookieMiddleware);
 app.use(parseHackathonId);
-
 // ─── Security headers ────────────────────────────────────────
 // Hand-rolled to avoid pulling in helmet for a small surface. CSP allows
 // inline styles only (the SPA injects style="…" attributes); scripts must be
@@ -219,9 +221,6 @@ async function recordAudit(req, action, targetType, targetId, payload) {
     });
 }
 
-// ─── Hackathon helpers ───────────────────────────────────────
-const { parseHackathonId, requireHackathonRole, requireSystemAdmin, requireActiveHackathon, getMembershipRole } =
-    buildHackathonHelpers({ db });
 
 // ─── Health checks ───────────────────────────────────────────
 // Liveness — process is up. No DB call so SIGTERM-draining stays cheap.
