@@ -124,8 +124,8 @@ gcloud run deploy "$SERVICE_NAME" \
   --min-instances=0 \
   --max-instances=5 \
   --timeout=300 \
-  --set-secrets="JWT_SECRET=${SECRET_NAME}:latest" \
-  --set-env-vars="NODE_ENV=production,AWS_REGION=us-east-1,BEDROCK_MODEL=us.anthropic.claude-sonnet-4-5-20250514-v1:0" \
+  --set-secrets="JWT_SECRET=${SECRET_NAME}:latest,OPENAI_API_KEY=openai-api-key:latest,DATABASE_URL=neon-database-url:latest" \
+  --set-env-vars="NODE_ENV=production,AWS_REGION=us-east-1,OPENAI_MODEL=gpt-4o" \
   --quiet
 
 # ── Step 9: Print service URL ─────────────────────────────────────
