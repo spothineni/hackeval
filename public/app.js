@@ -8,91 +8,379 @@
     'use strict';
 
     // ─── Auth State ──────────────────────────────────────────────
-    let authToken = localStorage.getItem('hackeval_token');
+    // Session lives in an HttpOnly cookie so JS can't read it; we keep only
+    // the user profile here for UI rendering. The CSRF token cookie is
+    // intentionally readable so we can echo it back as X-CSRF-Token.
     let currentUser = null;
+    // Multi-tenancy: which hackathon is the SPA acting on right now? The
+    // backend scopes everything by the X-Hackathon-Id header we set below.
+    let currentHackathon = null;     // { id, slug, name, role }
+    let availableHackathons = [];    // populated by /api/hackathons after login
+    const HACKATHON_KEY = 'hackeval_current_hackathon';
+
+    function readCookie(name) {
+        const target = name + '=';
+        for (const part of document.cookie.split(';')) {
+            const trimmed = part.trim();
+            if (trimmed.startsWith(target)) {
+                try { return decodeURIComponent(trimmed.slice(target.length)); }
+                catch { return trimmed.slice(target.length); }
+            }
+        }
+        return null;
+    }
 
     // ─── API Client ──────────────────────────────────────────────
-    function authHeaders() {
-        const h = { 'Content-Type': 'application/json' };
-        if (authToken) h['Authorization'] = `Bearer ${authToken}`;
+    function buildHeaders(method, hasJsonBody) {
+        const h = {};
+        if (hasJsonBody) h['Content-Type'] = 'application/json';
+        const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+        if (mutating) {
+            const csrf = readCookie('hackeval_csrf');
+            if (csrf) h['X-CSRF-Token'] = csrf;
+        }
+        // Scope every API call to the currently-selected hackathon. Routes
+        // that don't need it ignore the header.
+        if (currentHackathon?.id) h['X-Hackathon-Id'] = currentHackathon.id;
         return h;
     }
 
+    async function request(url, { method = 'GET', body, isFormData = false } = {}) {
+        const opts = {
+            method,
+            credentials: 'same-origin',
+            headers: buildHeaders(method, body != null && !isFormData),
+        };
+        if (body != null) opts.body = isFormData ? body : JSON.stringify(body);
+        const res = await fetch(url, opts);
+        if (res.status === 401) { logout({ skipServer: true }); throw new Error('Session expired'); }
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `Request failed (${res.status})`);
+        }
+        return res.json();
+    }
+
     const api = {
-        async get(url) {
-            const res = await fetch(url, { headers: authHeaders() });
-            if (res.status === 401) { logout(); throw new Error('Session expired'); }
-            if (!res.ok) throw new Error(await res.text());
-            return res.json();
-        },
-        async post(url, data) {
-            const res = await fetch(url, {
-                method: 'POST', headers: authHeaders(), body: JSON.stringify(data)
-            });
-            if (res.status === 401) { logout(); throw new Error('Session expired'); }
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || 'Request failed');
-            }
-            return res.json();
-        },
-        async put(url, data) {
-            const res = await fetch(url, {
-                method: 'PUT', headers: authHeaders(), body: JSON.stringify(data)
-            });
-            if (res.status === 401) { logout(); throw new Error('Session expired'); }
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || 'Request failed');
-            }
-            return res.json();
-        },
-        async del(url) {
-            const res = await fetch(url, { method: 'DELETE', headers: authHeaders() });
-            if (res.status === 401) { logout(); throw new Error('Session expired'); }
-            if (!res.ok) throw new Error(await res.text());
-            return res.json();
-        },
-        async uploadFiles(url, files) {
+        get: (url) => request(url),
+        post: (url, data) => request(url, { method: 'POST', body: data }),
+        put: (url, data) => request(url, { method: 'PUT', body: data }),
+        del: (url) => request(url, { method: 'DELETE' }),
+        uploadFiles: (url, files) => {
             const formData = new FormData();
             files.forEach(f => formData.append('files', f));
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${authToken}` },
-                body: formData
-            });
-            if (res.status === 401) { logout(); throw new Error('Session expired'); }
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || 'Upload failed');
-            }
-            return res.json();
-        }
+            return request(url, { method: 'POST', body: formData, isFormData: true });
+        },
     };
 
     // ─── Auth Functions ──────────────────────────────────────────
-    function isAdmin() { return currentUser && currentUser.role === 'admin'; }
-    function isParticipant() { return currentUser && currentUser.role === 'participant'; }
-    function isJudge() { return currentUser && currentUser.role === 'judge'; }
+    // Roles are now per-hackathon (membership-based). System-wide capabilities
+    // (creating hackathons, managing global users) hang off systemRole instead.
+    function isAdmin()       { return currentHackathon?.role === 'admin'; }
+    function isParticipant() { return currentHackathon?.role === 'participant'; }
+    function isJudge()       { return currentHackathon?.role === 'judge'; }
+    function isSystemAdmin() { return currentUser?.systemRole === 'system_admin'; }
 
-    function setAuth(token, user) {
-        authToken = token;
+    async function setAuth(_token, user) {
+        // The session cookie is set by the server; we just track the user
+        // profile locally for UI rendering. Token argument is kept in the
+        // signature for backwards compat with the login response shape.
         currentUser = user;
-        localStorage.setItem('hackeval_token', token);
         updateUserUI();
-        showAppShell(true);
+        await loadAndSelectHackathon();
     }
 
-    function logout() {
-        authToken = null;
+    // ─── Hackathon selection ─────────────────────────────────────
+    async function loadAndSelectHackathon() {
+        try {
+            availableHackathons = await api.get('/api/hackathons');
+        } catch {
+            availableHackathons = [];
+        }
+
+        if (availableHackathons.length === 0) {
+            showHackathonEmptyState();
+            return;
+        }
+        const remembered = localStorage.getItem(HACKATHON_KEY);
+        const match = availableHackathons.find(h => h.id === remembered);
+        if (match) return selectHackathon(match);
+        if (availableHackathons.length === 1) return selectHackathon(availableHackathons[0]);
+        showHackathonPicker();
+    }
+
+    function selectHackathon(h) {
+        currentHackathon = h;
+        try { localStorage.setItem(HACKATHON_KEY, h.id); } catch {}
+        updateUserUI();
+        updateHackathonBadge(h.name);
+        showAppShell(true);
+        // Re-route in case role-based gating changed (e.g. user is participant
+        // here but admin elsewhere).
+        if (typeof handleRoute === 'function') handleRoute();
+    }
+
+    function canCreateHackathon() { return isSystemAdmin() || currentUser?.systemRole === 'organizer'; }
+
+    function statusPill(status) {
+        const colors = {
+            active: 'var(--accent-green, #10b981)',
+            pending: 'var(--accent-amber, #f59e0b)',
+            rejected: 'var(--accent-red, #ef4444)',
+            archived: 'var(--text-muted)',
+        };
+        return `<span style="font-size:0.7rem;padding:2px 8px;border-radius:99px;background:${colors[status] || 'var(--text-muted)'};color:#fff;text-transform:uppercase;">${escHtml(status)}</span>`;
+    }
+
+    async function showHackathonPicker() {
+        // Refresh both lists every open so the modal reflects current state.
+        let mine = [];
+        let discover = [];
+        let pendingApproval = [];
+        try {
+            mine = await api.get('/api/hackathons');
+            discover = await api.get('/api/hackathons?discover=1');
+            availableHackathons = mine;
+            if (isSystemAdmin()) {
+                pendingApproval = mine.filter(h => h.status === 'pending');
+            }
+        } catch {}
+
+        const renderItem = (h, action) => `
+            <div class="hackathon-pick-item" data-hid="${escAttr(h.id)}"
+                 style="padding:var(--space-md);border:1px solid var(--glass-border);border-radius:var(--radius-md);margin-bottom:var(--space-sm);display:flex;justify-content:space-between;align-items:center;gap:var(--space-md);">
+                <div style="cursor:${action === 'select' ? 'pointer' : 'default'};flex:1;" data-action="select">
+                    <div style="font-weight:600;display:flex;gap:var(--space-sm);align-items:center;">
+                        ${escHtml(h.name)} ${statusPill(h.status)}
+                    </div>
+                    <div style="color:var(--text-muted);font-size:0.8rem;">${escHtml(h.slug)}${h.role ? ' · role: ' + escHtml(h.role) : ''}</div>
+                </div>
+                ${action === 'join' ? `<button class="btn btn-primary" data-action="join">Join</button>` : ''}
+                ${action === 'review' ? `
+                    <div style="display:flex;gap:var(--space-xs);">
+                        <button class="btn btn-primary" data-action="approve">Approve</button>
+                        <button class="btn btn-secondary" data-action="reject">Reject</button>
+                    </div>` : ''}
+                ${action === 'select' ? '<span style="color:var(--text-muted);">→</span>' : ''}
+            </div>
+        `;
+
+        const sections = [];
+        if (mine.length) {
+            sections.push(`<h3 style="margin:var(--space-md) 0 var(--space-sm);font-size:0.9rem;color:var(--text-muted);">Your hackathons</h3>
+                ${mine.map(h => renderItem(h, 'select')).join('')}`);
+        }
+        if (discover.length) {
+            sections.push(`<h3 style="margin:var(--space-md) 0 var(--space-sm);font-size:0.9rem;color:var(--text-muted);">Discover (open to join)</h3>
+                ${discover.map(h => renderItem(h, 'join')).join('')}`);
+        }
+        if (pendingApproval.length) {
+            sections.push(`<h3 style="margin:var(--space-md) 0 var(--space-sm);font-size:0.9rem;color:var(--text-muted);">Awaiting your approval</h3>
+                ${pendingApproval.map(h => renderItem(h, 'review')).join('')}`);
+        }
+        if (sections.length === 0) {
+            sections.push(`<p style="color:var(--text-muted);">No hackathons available.${canCreateHackathon() ? ' Create one below.' : ''}</p>`);
+        }
+
+        const buttons = [];
+        if (canCreateHackathon()) buttons.push(`<button class="btn btn-primary" id="btn-create-hackathon">+ Create new hackathon</button>`);
+        buttons.push(`<button class="btn btn-secondary" id="btn-edit-profile">Edit profile</button>`);
+
+        openModal('Choose a hackathon', sections.join(''), buttons.join(' '));
+
+        // Click handlers
+        document.querySelectorAll('.hackathon-pick-item').forEach(el => {
+            const hid = el.dataset.hid;
+            el.addEventListener('click', async (e) => {
+                const action = e.target.dataset.action || e.target.closest('[data-action]')?.dataset?.action;
+                const fromMine = mine.find(x => x.id === hid);
+                const fromDiscover = discover.find(x => x.id === hid);
+                const h = fromMine || fromDiscover;
+                if (!h) return;
+                if (action === 'select' && fromMine) {
+                    closeModal(); selectHackathon(h);
+                } else if (action === 'join' && fromDiscover) {
+                    await joinHackathonFlow(h);
+                } else if (action === 'approve') {
+                    await approveHackathon(h);
+                } else if (action === 'reject') {
+                    await rejectHackathon(h);
+                }
+            });
+        });
+        const createBtn = document.getElementById('btn-create-hackathon');
+        if (createBtn) createBtn.addEventListener('click', createHackathonPrompt);
+        const profileBtn = document.getElementById('btn-edit-profile');
+        if (profileBtn) profileBtn.addEventListener('click', showProfileModal);
+    }
+
+    function showHackathonEmptyState() {
+        const action = canCreateHackathon()
+            ? `<p>You can create one to get started.</p>
+               <button class="btn btn-primary" id="btn-create-hackathon">+ Create hackathon</button>`
+            : `<p>Browse open events below or ask an admin to add you to one.</p>
+               <button class="btn btn-primary" id="btn-discover">Browse open hackathons</button>`;
+        openModal('No hackathons available', action, '<button class="btn btn-secondary" id="btn-edit-profile">Edit profile</button>');
+        document.getElementById('btn-create-hackathon')?.addEventListener('click', createHackathonPrompt);
+        document.getElementById('btn-discover')?.addEventListener('click', () => { closeModal(); showHackathonPicker(); });
+        document.getElementById('btn-edit-profile')?.addEventListener('click', showProfileModal);
+    }
+
+    async function createHackathonPrompt() {
+        const slug = window.prompt('Slug (e.g. "techhack-2026"):');
+        if (!slug) return;
+        const name = window.prompt('Display name:');
+        if (!name) return;
+        const description = window.prompt('Short description (optional):') || '';
+        try {
+            const res = await api.post('/api/hackathons', { slug, name, description });
+            const msg = res.status === 'pending'
+                ? 'Hackathon created and submitted for admin approval.'
+                : 'Hackathon created.';
+            showToast(msg, 'success');
+            availableHackathons = await api.get('/api/hackathons');
+            const created = availableHackathons.find(h => h.slug === slug);
+            closeModal();
+            if (created && created.status === 'active') selectHackathon(created);
+            else showHackathonPicker();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    }
+
+    async function joinHackathonFlow(h) {
+        // Check whether the user already has a profile; if not, force them
+        // through the profile modal first so judges have something to review.
+        let profile = null;
+        try { profile = await api.get('/api/profile'); } catch {}
+        if (!profile) {
+            showToast('Please fill out your profile first.', 'info');
+            showProfileModal({ afterSave: () => joinHackathonFlow(h) });
+            return;
+        }
+        try {
+            await api.post(`/api/hackathons/${encodeURIComponent(h.id)}/join`, {});
+            showToast(`Joined ${h.name}`, 'success');
+            availableHackathons = await api.get('/api/hackathons');
+            const joined = availableHackathons.find(x => x.id === h.id);
+            closeModal();
+            if (joined) selectHackathon(joined);
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    }
+
+    async function approveHackathon(h) {
+        if (!window.confirm(`Approve "${h.name}"? It will become active and visible to participants.`)) return;
+        try {
+            await api.post(`/api/hackathons/${encodeURIComponent(h.id)}/approve`, {});
+            showToast(`Approved ${h.name}`, 'success');
+            showHackathonPicker();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    }
+
+    async function rejectHackathon(h) {
+        const reason = window.prompt(`Reject "${h.name}". Reason (optional):`, '');
+        if (reason === null) return; // cancelled
+        try {
+            await api.post(`/api/hackathons/${encodeURIComponent(h.id)}/reject`, { reason });
+            showToast(`Rejected ${h.name}`, 'info');
+            showHackathonPicker();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    }
+
+    // ─── Profile modal ───────────────────────────────────────────
+    async function showProfileModal({ afterSave } = {}) {
+        let profile = {};
+        try { profile = await api.get('/api/profile') || {}; } catch {}
+        const safe = (v) => v == null ? '' : escAttr(v);
+        const skillsCsv = (profile.skills || []).map(s => s).join(', ');
+        const levels = ['', 'beginner', 'intermediate', 'advanced', 'expert'];
+        const body = `
+            <div class="form-group"><label class="form-label">Bio</label>
+                <textarea class="form-textarea" id="pf-bio" maxlength="5000" placeholder="Tell us about yourself">${escHtml(profile.bio || '')}</textarea></div>
+            <div class="form-group"><label class="form-label">Skills (comma-separated)</label>
+                <input class="form-input" id="pf-skills" value="${safe(skillsCsv)}" placeholder="React, Postgres, ML"></div>
+            <div class="form-group"><label class="form-label">GitHub URL</label>
+                <input class="form-input" id="pf-github" value="${safe(profile.githubUrl)}" placeholder="https://github.com/..."></div>
+            <div class="form-group"><label class="form-label">LinkedIn URL</label>
+                <input class="form-input" id="pf-linkedin" value="${safe(profile.linkedinUrl)}" placeholder="https://linkedin.com/in/..."></div>
+            <div class="form-group"><label class="form-label">Portfolio URL</label>
+                <input class="form-input" id="pf-portfolio" value="${safe(profile.portfolioUrl)}" placeholder="https://..."></div>
+            <div class="form-group"><label class="form-label">Experience Level</label>
+                <select class="form-input" id="pf-level">
+                    ${levels.map(l => `<option value="${l}" ${profile.experienceLevel === l ? 'selected' : ''}>${l || '— select —'}</option>`).join('')}
+                </select></div>
+        `;
+        openModal('Your profile', body, '<button class="btn btn-primary" id="btn-save-profile">Save</button>');
+        document.getElementById('btn-save-profile').addEventListener('click', async () => {
+            const skills = document.getElementById('pf-skills').value
+                .split(',').map(s => s.trim()).filter(Boolean);
+            const payload = {
+                bio: document.getElementById('pf-bio').value || null,
+                skills,
+                githubUrl: document.getElementById('pf-github').value || null,
+                linkedinUrl: document.getElementById('pf-linkedin').value || null,
+                portfolioUrl: document.getElementById('pf-portfolio').value || null,
+                experienceLevel: document.getElementById('pf-level').value || null,
+            };
+            try {
+                await api.put('/api/profile', payload);
+                showToast('Profile saved', 'success');
+                closeModal();
+                if (typeof afterSave === 'function') afterSave();
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+    }
+
+    function logout({ skipServer = false } = {}) {
         currentUser = null;
-        localStorage.removeItem('hackeval_token');
+        currentHackathon = null;
+        availableHackathons = [];
+        // Clear stale legacy keys from older versions that stored the JWT.
+        try { localStorage.removeItem('hackeval_token'); } catch {}
+        try { localStorage.removeItem(HACKATHON_KEY); } catch {}
+        if (!skipServer) {
+            // Best-effort — failure to reach the server still logs the user
+            // out client-side. The server endpoint clears the cookies.
+            fetch('/api/auth/logout', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: buildHeaders('POST', false),
+            }).catch(() => {});
+        }
         showAppShell(false);
     }
 
+    // Three top-level views, only one visible at a time:
+    //   landing  → marketing page (default for unauthenticated visitors)
+    //   auth    → sign in / register form (clicked into from landing)
+    //   app     → authenticated app shell
+    function showView(name) {
+        const landing = document.getElementById('landing');
+        const auth = document.getElementById('auth-screen');
+        const app = document.getElementById('app-shell');
+        if (landing) landing.style.display = name === 'landing' ? '' : 'none';
+        if (auth)    auth.style.display    = name === 'auth' ? 'flex' : 'none';
+        if (app)     app.style.display     = name === 'app' ? '' : 'none';
+    }
+    // Back-compat shim for the rest of the file: showAppShell(true) → app,
+    // showAppShell(false) → landing (the public default).
     function showAppShell(authenticated) {
-        document.getElementById('auth-screen').style.display = authenticated ? 'none' : 'flex';
-        document.getElementById('app-shell').style.display = authenticated ? '' : 'none';
+        showView(authenticated ? 'app' : 'landing');
+    }
+    function showAuthScreen(mode) {
+        if (mode === 'register' || mode === 'login') {
+            authMode = mode;
+            if (typeof updateAuthMode === 'function') updateAuthMode();
+        }
+        showView('auth');
     }
 
     function updateUserUI() {
@@ -103,8 +391,11 @@
         if (avatar) avatar.textContent = currentUser.displayName.charAt(0);
         if (nameEl) nameEl.textContent = currentUser.displayName;
         if (roleEl) {
-            roleEl.textContent = currentUser.role;
-            roleEl.className = 'user-role role-badge-' + currentUser.role;
+            // Role shown is the user's role IN THE SELECTED HACKATHON. Falls
+            // back to the legacy global role until a hackathon is picked.
+            const role = currentHackathon?.role || currentUser.role || '—';
+            roleEl.textContent = role;
+            roleEl.className = 'user-role role-badge-' + role;
         }
         const settingsItem = document.getElementById('nav-settings-item');
         if (settingsItem) settingsItem.style.display = isAdmin() ? '' : 'none';
@@ -117,15 +408,17 @@
     }
 
     async function checkAuth() {
-        if (!authToken) { showAppShell(false); return; }
+        // Cookie is HttpOnly so we can't peek at it from JS — just ask the
+        // server who we are. 401 means no valid session, show login.
         try {
             const user = await api.get('/api/auth/me');
             currentUser = user;
             updateUserUI();
-            showAppShell(true);
-            handleRoute();
+            await loadAndSelectHackathon();
         } catch (e) {
-            logout();
+            // /api/auth/me 401 throws "Session expired" — that's the expected
+            // unauthenticated state on first load; just show the auth screen.
+            showAppShell(false);
         }
     }
 
@@ -261,7 +554,14 @@
 
     function updateHackathonBadge(name) {
         const badge = document.getElementById('hackathon-badge');
-        if (badge) badge.querySelector('.badge-text').textContent = name;
+        if (badge) {
+            badge.querySelector('.badge-text').textContent = name;
+            // Click to switch — useful when the user belongs to >1 event.
+            // Re-attach each call so we don't accumulate listeners.
+            badge.style.cursor = 'pointer';
+            badge.title = 'Click to switch hackathon';
+            badge.onclick = () => showHackathonPicker();
+        }
         document.title = `${name} — Hackathon Evaluator`;
     }
 
@@ -279,7 +579,7 @@
         const toast = document.createElement('div');
         toast.className = `toast toast-${type}`;
         const icons = { success: '✅', error: '❌', info: 'ℹ️' };
-        toast.innerHTML = `<span>${icons[type] || ''}</span><span>${message}</span>`;
+        toast.innerHTML = `<span>${icons[type] || ''}</span><span>${escHtml(message)}</span>`;
         container.appendChild(toast);
         setTimeout(() => { toast.classList.add('toast-exit'); setTimeout(() => toast.remove(), 300); }, 3000);
     }
@@ -346,27 +646,27 @@
             container.innerHTML = `
                 <div class="page-header"><h1>Dashboard</h1><p class="subtitle">Overview of ${escHtml(hackathonName)}</p></div>
                 <div class="stats-grid">
-                    <div class="glass-card stat-card"><div class="stat-icon">🚀</div><div class="stat-value">${dash.totalProjects}</div><div class="stat-label">Projects</div></div>
-                    <div class="glass-card stat-card"><div class="stat-icon">⭐</div><div class="stat-value">${dash.totalEvals}</div><div class="stat-label">Evaluations</div></div>
-                    <div class="glass-card stat-card"><div class="stat-icon">🤖</div><div class="stat-value">${aiCount}</div><div class="stat-label">AI Evaluated</div></div>
-                    <div class="glass-card stat-card"><div class="stat-icon">📈</div><div class="stat-value">${avgOverall}</div><div class="stat-label">Avg Score</div></div>
+                    <div class="glass-card stat-card"><div class="stat-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div><div class="stat-value">${dash.totalProjects}</div><div class="stat-label">Projects</div></div>
+                    <div class="glass-card stat-card"><div class="stat-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></div><div class="stat-value">${dash.totalEvals}</div><div class="stat-label">Evaluations</div></div>
+                    <div class="glass-card stat-card"><div class="stat-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6M9 13h4"/></svg></div><div class="stat-value">${aiCount}</div><div class="stat-label">AI Evaluated</div></div>
+                    <div class="glass-card stat-card"><div class="stat-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div><div class="stat-value">${avgOverall}</div><div class="stat-label">Avg Score</div></div>
                 </div>
                 <div class="two-col">
                     <div class="glass-card no-hover">
-                        <h3 style="font-size:1rem;font-weight:700;margin-bottom:var(--space-md);">🏆 Top Projects</h3>
-                        ${top3.length === 0 ? '<p style="color:var(--text-muted);font-size:0.9rem;">No projects evaluated yet</p>' :
+                        <h3 style="font-family:var(--font-mono);font-size:0.7rem;font-weight:600;margin-bottom:var(--space-md);text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);">Top Projects</h3>
+                        ${top3.length === 0 ? '<p style="color:var(--text-muted);font-size:0.82rem;">No projects evaluated yet</p>' :
                     top3.map((p, i) => `<div class="top-project">
                             <div class="top-project-rank ${i === 0 ? 'rank-1' : i === 1 ? 'rank-2' : 'rank-3'}">${i + 1}</div>
                             <div class="top-project-info">
-                                <div class="top-project-name">${escHtml(p.name)} ${p.hasAI ? '<span class="ai-eval-badge">🤖 AI</span>' : ''}</div>
+                                <div class="top-project-name">${escHtml(p.name)} ${p.hasAI ? '<span class="ai-eval-badge">AI</span>' : ''}</div>
                                 <div class="top-project-score">${p.avgScore.toFixed(1)} / 10</div>
                             </div></div>`).join('')}
                     </div>
                     <div class="glass-card no-hover">
-                        <h3 style="font-size:1rem;font-weight:700;margin-bottom:var(--space-md);">🕒 Recent Activity</h3>
-                        ${dash.recentEvals.length === 0 ? '<p style="color:var(--text-muted);font-size:0.9rem;">No evaluations yet</p>' :
+                        <h3 style="font-family:var(--font-mono);font-size:0.7rem;font-weight:600;margin-bottom:var(--space-md);text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);">Recent Activity</h3>
+                        ${dash.recentEvals.length === 0 ? '<p style="color:var(--text-muted);font-size:0.82rem;">No evaluations yet</p>' :
                     `<div class="activity-list">${dash.recentEvals.map(ev => `<div class="activity-item">
-                                <div class="activity-icon">⭐</div>
+                                <div class="activity-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></div>
                                 <div class="activity-text"><strong>${escHtml(ev.judgeName)}</strong> evaluated <strong>${escHtml(ev.projectName || 'Unknown')}</strong></div>
                                 <div class="activity-time">${timeAgo(ev.createdAt)}</div></div>`).join('')}</div>`}
                     </div>
@@ -403,24 +703,25 @@
                 if (isAdmin()) document.getElementById('btn-add-first-project').addEventListener('click', () => openProjectModal());
                 return;
             }
-            content.innerHTML = `<div class="projects-grid">${projects.map(p => {
+            content.innerHTML = `<div class="projects-list">${projects.map(p => {
                 const lb = scoreMap[p.id] || { avgScore: 0, evalCount: 0, hasAI: false };
-                return `<div class="glass-card project-card">
-                    <div class="project-card-header">
-                        <div class="project-card-title">${escHtml(p.name)} ${lb.hasAI ? '<span class="ai-eval-badge">🤖 AI</span>' : ''}</div>
-                        ${isAdmin() ? `<div class="project-card-actions">
-                            <button class="btn btn-ai btn-sm btn-ai-eval" data-id="${p.id}" title="AI Evaluate">🤖</button>
-                            <button class="btn btn-secondary btn-sm btn-edit-project" data-id="${p.id}" title="Edit">✏️</button>
-                            <button class="btn btn-danger btn-sm btn-delete-project" data-id="${p.id}" data-name="${escAttr(p.name)}" title="Delete">🗑️</button>
-                        </div>` : ''}
+                return `<div class="glass-card project-list-item">
+                    <div class="pli-main">
+                        <div class="pli-title">${escHtml(p.name)} ${lb.hasAI ? '<span class="ai-eval-badge">AI</span>' : ''}</div>
+                        <div class="pli-desc" title="${escAttr(p.description || '')}">${escHtml(p.description || 'No description')}</div>
                     </div>
-                    <div class="project-card-desc">${escHtml(p.description || 'No description')}</div>
-                    <div class="project-card-members">${(p.members || []).map(m => `<span class="member-chip">${escHtml(m)}</span>`).join('')}</div>
-                    <div class="project-card-tech">${(p.techStack || []).map(t => `<span class="tech-chip">${escHtml(t)}</span>`).join('')}</div>
-                    <div class="project-card-footer">
-                        <span style="font-size:0.8rem;color:var(--text-muted);">${lb.evalCount} eval${lb.evalCount !== 1 ? 's' : ''}</span>
+                    <div class="pli-members">${(p.members || []).map(m => `<span class="member-chip">${escHtml(m)}</span>`).join('')}</div>
+                    <div class="pli-tech">${(p.techStack || []).map(t => `<span class="tech-chip">${escHtml(t)}</span>`).join('')}</div>
+                    <div class="pli-score">
                         ${lb.evalCount > 0 || lb.hasAI ? `<span class="project-score-badge">${lb.avgScore.toFixed(1)} / 10</span>` : '<span style="font-size:0.8rem;color:var(--text-muted);">Not scored</span>'}
-                    </div></div>`;
+                        <div style="font-size:0.7rem;color:var(--text-muted);margin-top:4px;">${lb.evalCount} eval${lb.evalCount !== 1 ? 's' : ''}</div>
+                    </div>
+                    ${isAdmin() ? `<div class="pli-actions">
+                        <button class="btn btn-ai btn-sm btn-ai-eval" data-id="${p.id}" title="AI Evaluate">AI</button>
+                        <button class="btn btn-secondary btn-sm btn-edit-project" data-id="${p.id}" title="Edit">✏️</button>
+                        <button class="btn btn-danger btn-sm btn-delete-project" data-id="${p.id}" data-name="${escAttr(p.name)}" title="Delete">🗑️</button>
+                    </div>` : ''}
+                </div>`;
             }).join('')}</div>`;
 
             if (isAdmin()) {
@@ -456,10 +757,10 @@
                     <div class="ai-score-label">${escHtml(c.name)}</div>
                     <div class="ai-score-reasoning">${escHtml(result.reasoning[c.id] || '')}</div>
                 </div><div class="ai-score-value">${result.scores[c.id]}</div></div>`).join('');
-            openModal('🤖 AI Evaluation Results', `
+            openModal('AI Evaluation Results', `
                 <div class="ai-eval-card">
                     <div class="ai-eval-header">
-                        <span class="ai-eval-badge">🤖 AI Scored</span>
+                        <span class="ai-eval-badge">AI Scored</span>
                         <span class="ai-eval-model">${escHtml(result.model)}</span>
                     </div>
                     <div class="ai-eval-feedback">${escHtml(result.overallFeedback)}</div>
@@ -492,10 +793,24 @@
                     <div class="file-dropzone-icon">📂</div>
                     <div class="file-dropzone-text">Drop files, folders, or a ZIP here</div>
                     <div class="file-dropzone-hint">Up to 50 files, 50MB max • ZIP files auto-extracted</div>
-                    <div style="margin-top:8px;display:flex;gap:8px;justify-content:center;">
+                    <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;">
                         <button type="button" class="btn btn-secondary btn-sm" id="pm-select-files">📄 Files</button>
                         <button type="button" class="btn btn-secondary btn-sm" id="pm-select-folder">📁 Folder</button>
                     </div>
+                </div>
+                <div style="background:var(--accent-indigo-dim); padding:10px 12px; border-radius:var(--radius); margin-bottom:var(--space-md); border:1px solid rgba(99,102,241,0.2); font-size:0.75rem; color:var(--text-secondary); line-height:1.4;">
+                    <div style="font-weight:600; color:var(--text-primary); margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent-indigo)" stroke-width="2.5"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg> AI Evaluation Constraints
+                    </div>
+                    Only standard code and text files (e.g. .js, .py, .md) are sent to the AI. Binaries and images are ignored. 
+                    <br>To prevent limits, each file is truncated to its first <strong>15,000 characters</strong>.
+                </div>
+                <div class="upload-progress-wrap" id="pm-progress-wrap">
+                    <div class="upload-progress-label">
+                        <span id="pm-progress-text">Uploading...</span>
+                        <span id="pm-progress-pct">0%</span>
+                    </div>
+                    <div class="upload-progress-bar"><div class="upload-progress-fill" id="pm-progress-fill"></div></div>
                 </div>
                 <input type="file" id="pm-file-input" multiple style="display:none;">
                 <input type="file" id="pm-folder-input" webkitdirectory style="display:none;">
@@ -553,12 +868,57 @@
         }
 
         async function uploadFiles(files) {
-            if (files.length) {
-                dropzone.querySelector('.file-dropzone-text').textContent = `Uploading ${files.length} file(s)...`;
-                await api.uploadFiles(`/api/projects/${projectId}/files`, files);
-                dropzone.querySelector('.file-dropzone-text').textContent = 'Drop files, folders, or a ZIP here';
+            if (!files.length) return;
+            const progressWrap = document.getElementById('pm-progress-wrap');
+            const progressFill = document.getElementById('pm-progress-fill');
+            const progressText = document.getElementById('pm-progress-text');
+            const progressPct  = document.getElementById('pm-progress-pct');
+
+            // Show progress bar
+            if (progressWrap) {
+                progressWrap.classList.add('visible');
+                progressFill.style.width = '0%';
+                progressText.textContent = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}...`;
+                progressPct.textContent = '0%';
+            }
+
+            try {
+                await new Promise((resolve, reject) => {
+                    const formData = new FormData();
+                    files.forEach(f => formData.append('files', f));
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', `/api/projects/${projectId}/files`);
+                    // Session cookie flows automatically with `withCredentials`;
+                    // the CSRF token must be echoed from its (readable) cookie.
+                    xhr.withCredentials = true;
+                    const csrf = readCookie('hackeval_csrf');
+                    if (csrf) xhr.setRequestHeader('X-CSRF-Token', csrf);
+                    xhr.upload.onprogress = (e) => {
+                        if (e.lengthComputable && progressFill) {
+                            const pct = Math.round((e.loaded / e.total) * 100);
+                            progressFill.style.width = pct + '%';
+                            if (progressPct) progressPct.textContent = pct + '%';
+                        }
+                    };
+                    xhr.onload = () => {
+                        if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText));
+                        else reject(new Error(JSON.parse(xhr.responseText)?.error || 'Upload failed'));
+                    };
+                    xhr.onerror = () => reject(new Error('Network error during upload'));
+                    xhr.send(formData);
+                });
+                // Complete the bar
+                if (progressFill) progressFill.style.width = '100%';
+                if (progressPct)  progressPct.textContent = '100%';
+                if (progressText) progressText.textContent = `✅ ${files.length} file${files.length > 1 ? 's' : ''} uploaded!`;
                 showToast(`${files.length} file(s) uploaded`);
+                setTimeout(() => { if (progressWrap) progressWrap.classList.remove('visible'); }, 2000);
                 refreshFiles();
+            } catch (err) {
+                if (progressText) progressText.textContent = `❌ ${err.message}`;
+                if (progressFill) progressFill.style.background = '#ef4444';
+                setTimeout(() => { if (progressWrap) progressWrap.classList.remove('visible'); if (progressFill) progressFill.style.background = ''; }, 3000);
+                showToast(err.message, 'error');
             }
         }
 
@@ -637,7 +997,7 @@
         sidebar.innerHTML = projects.map(p => {
             const lb = evalMap[p.id] || {};
             return `<div class="judging-project-item ${p.id === selectedJudgingProject ? 'selected' : ''}" data-id="${p.id}">
-                <div class="jp-name">${escHtml(p.name)} ${lb.hasAI ? '<span class="ai-eval-badge" style="font-size:0.6rem;">🤖</span>' : ''}</div>
+                <div class="jp-name">${escHtml(p.name)} ${lb.hasAI ? '<span class="ai-eval-badge">AI</span>' : ''}</div>
                 <div class="jp-status">${lb.evalCount || 0} eval${(lb.evalCount || 0) !== 1 ? 's' : ''}</div></div>`;
         }).join('');
         sidebar.querySelectorAll('.judging-project-item').forEach(item => {
@@ -691,11 +1051,11 @@
                     </div>
                     <div class="file-list">
                         ${files.map(f => `
-                            <div class="file-item" data-stored="${escHtml(f.storedName)}" data-name="${escHtml(f.originalName)}">
+                            <div class="file-item" data-stored="${escHtml(f.storedName)}" data-name="${escHtml(f.originalName)}" data-url="${escAttr(f.url || '')}">
                                 <span class="file-icon">${getFileIcon(f.originalName)}</span>
                                 <span class="file-name">${escHtml(f.originalName)}</span>
                                 <span class="file-size">${formatSize(f.size)}</span>
-                                <a href="/api/files/${encodeURIComponent(f.storedName)}" target="_blank" class="file-download-btn" title="Download" onclick="event.stopPropagation();">⬇</a>
+                                <a href="${escAttr(f.url || '#')}" target="_blank" class="file-download-btn" title="Download" onclick="event.stopPropagation();">⬇</a>
                             </div>
                         `).join('')}
                     </div>
@@ -711,7 +1071,7 @@
                 ${criteria.map(c => `<div class="score-slider-group">
                     <div class="score-slider-header">
                         <span class="score-slider-label">${escHtml(c.name)} <span style="color:var(--text-muted);font-size:0.75rem;">(weight: ${c.weight})</span>
-                        ${aiEval ? `<span style="color:var(--accent-violet);font-size:0.75rem;margin-left:var(--space-sm);">🤖 AI: ${aiEval.scores[c.id] || '?'}</span>` : ''}</span>
+                        ${aiEval ? `<span style="font-family:var(--font-mono);color:var(--accent-indigo);font-size:0.65rem;margin-left:var(--space-sm);">AI: ${aiEval.scores[c.id] || '?'}</span>` : ''}</span>
                         <span class="score-slider-value" id="sv-${c.id}">5</span>
                     </div>
                     <input type="range" class="score-slider" id="ss-${c.id}" min="1" max="10" value="5" data-criterion="${c.id}">
@@ -721,7 +1081,7 @@
                 <button class="btn btn-primary" id="jf-submit" style="width:100%;">Submit Evaluation</button>
             </div>
             ${aiEval ? `<div class="ai-eval-card">
-                <div class="ai-eval-header"><span class="ai-eval-badge">🤖 AI Evaluation</span><span class="ai-eval-model">${escHtml(aiEval.model)}</span></div>
+                <div class="ai-eval-header"><span class="ai-eval-badge">AI Evaluation</span><span class="ai-eval-model">${escHtml(aiEval.model)}</span></div>
                 <div class="ai-eval-feedback">${escHtml(aiEval.overallFeedback)}</div>
                 ${criteria.map(c => `<div class="ai-score-row"><div>
                     <div class="ai-score-label">${escHtml(c.name)}</div>
@@ -739,6 +1099,7 @@
             item.addEventListener('click', async () => {
                 const storedName = item.dataset.stored;
                 const fileName = item.dataset.name;
+                const fileUrl = item.dataset.url;
                 const viewer = document.getElementById('file-viewer');
                 const viewerName = document.getElementById('file-viewer-name');
                 const viewerContent = document.getElementById('file-viewer-content');
@@ -771,13 +1132,13 @@
                         const isImage = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext);
                         if (isImage) {
                             viewerContent.innerHTML = `<div style="text-align:center;padding:var(--space-md);">
-                                <img src="/api/files/${encodeURIComponent(storedName)}" style="max-width:100%;max-height:500px;border-radius:var(--radius-md);" alt="${escHtml(fileName)}">
+                                <img src="${escAttr(fileUrl)}" style="max-width:100%;max-height:500px;border-radius:var(--radius-md);" alt="${escHtml(fileName)}">
                             </div>`;
                         } else {
                             viewerContent.innerHTML = `<div style="text-align:center;padding:var(--space-xl);color:var(--text-muted);">
                                 <div style="font-size:3rem;margin-bottom:var(--space-md);">${getFileIcon(fileName)}</div>
                                 <div style="margin-bottom:var(--space-sm);">${escHtml(resp.message || 'Binary file')}</div>
-                                <a href="/api/files/${encodeURIComponent(storedName)}" target="_blank" class="btn btn-secondary" style="display:inline-block;">⬇ Download ${escHtml(fileName)}</a>
+                                <a href="${escAttr(fileUrl)}" target="_blank" class="btn btn-secondary" style="display:inline-block;">⬇ Download ${escHtml(fileName)}</a>
                             </div>`;
                         }
                     }
@@ -799,15 +1160,35 @@
         formContainer.querySelectorAll('.score-slider').forEach(slider => {
             slider.addEventListener('input', () => { document.getElementById(`sv-${slider.dataset.criterion}`).textContent = slider.value; });
         });
-        document.getElementById('jf-submit').addEventListener('click', async () => {
+        document.getElementById('jf-submit').addEventListener('click', async (e) => {
+            const btn = e.target;
+            const origText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Submitting...';
+            
             const scores = {};
             criteria.forEach(c => { scores[c.id] = parseInt(document.getElementById(`ss-${c.id}`).value, 10); });
             try {
                 await api.post('/api/evaluations', { projectId: project.id, scores, notes: document.getElementById('jf-notes').value.trim() });
                 showToast(`Evaluation submitted for ${project.name}`);
-                await renderJudgingForm(projects);
-                await renderJudgingSidebar(projects);
-            } catch (err) { showToast(err.message, 'error'); }
+                
+                btn.textContent = '✅ Submitted!';
+                btn.style.background = 'var(--accent-emerald)';
+                btn.style.borderColor = 'var(--accent-emerald)';
+                
+                setTimeout(async () => {
+                    const currentIndex = projects.findIndex(p => p.id === selectedJudgingProject);
+                    if (currentIndex >= 0 && currentIndex < projects.length - 1) {
+                        selectedJudgingProject = projects[currentIndex + 1].id;
+                    }
+                    await renderJudgingSidebar(projects);
+                    await renderJudgingForm(projects);
+                }, 1200);
+            } catch (err) { 
+                showToast(err.message, 'error');
+                btn.disabled = false;
+                btn.textContent = origText;
+            }
         });
     }
 
@@ -830,24 +1211,25 @@
                 content.innerHTML = `<div class="empty-state"><div class="empty-icon">🏆</div><div class="empty-title">No rankings yet</div><div class="empty-desc">Evaluate some projects to see the leaderboard</div></div>`;
             } else {
                 content.innerHTML = `
-                    <div style="display:flex;gap:var(--space-lg);margin-bottom:var(--space-md);font-size:0.8rem;color:var(--text-muted);">
+                    <div style="display:flex;gap:var(--space-lg);margin-bottom:var(--space-md);font-family:var(--font-mono);font-size:0.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;">
                         <span><span class="hybrid-legend-dot" style="background:var(--accent-cyan);"></span> Human Score</span>
-                        <span><span class="hybrid-legend-dot" style="background:var(--accent-violet);"></span> AI Score</span>
+                        <span><span class="hybrid-legend-dot" style="background:var(--accent-indigo);"></span> AI Score</span>
                         <span>Blend: 60% Human + 40% AI</span>
                     </div>
                     <div class="leaderboard-list">${ranked.map((p, i) => {
                     const pct = (p.avgScore / 10) * 100;
                     const rankClass = i === 0 ? 'rank-1' : i === 1 ? 'rank-2' : i === 2 ? 'rank-3' : 'rank-other';
-                    return `<div class="leaderboard-item">
+                    const topGlow = i < 3 ? ' top-glow' : '';
+                    return `<div class="leaderboard-item${topGlow}">
                             <div class="leaderboard-rank ${rankClass}">${i + 1}</div>
                             <div class="leaderboard-info">
-                                <div class="leaderboard-name">${escHtml(p.name)} ${p.hasAI ? '<span class="ai-eval-badge">🤖 AI</span>' : ''}</div>
+                                <div class="leaderboard-name">${escHtml(p.name)} ${p.hasAI ? '<span class="ai-eval-badge">AI</span>' : ''}</div>
                                 <div class="leaderboard-bar-container"><div class="leaderboard-bar" style="width:0%" data-width="${pct}%"></div></div>
                                 ${p.hasAI ? `<div class="hybrid-score-bar">
                                     <div class="hybrid-bar-human" style="flex:${p.humanScore}"></div>
                                     <div class="hybrid-bar-ai" style="flex:${p.aiScore}"></div>
                                 </div>
-                                <div class="hybrid-legend"><span>👤 ${p.humanScore.toFixed(1)}</span><span>🤖 ${p.aiScore.toFixed(1)}</span></div>` : ''}
+                                <div class="hybrid-legend"><span>H ${p.humanScore.toFixed(1)}</span><span>AI ${p.aiScore.toFixed(1)}</span></div>` : ''}
                                 <div class="score-breakdown" style="margin-top:var(--space-sm);">
                                     ${criteria.map(c => `<div class="score-breakdown-item">
                                         <div class="sb-value">${(p.criteriaAvgs[c.id] || 0).toFixed(1)}</div>
@@ -887,7 +1269,7 @@
                     <div class="form-group"><label class="form-label">Hackathon Name</label>
                         <input class="form-input" id="set-name" value="${escAttr(settings.hackathonName || '')}"></div>
                     <button class="btn btn-primary btn-sm" id="set-save-name">Save Name</button></div>
-                <div class="glass-card no-hover settings-section"><h3>🤖 AI Scoring Weight</h3>
+                <div class="glass-card no-hover settings-section"><h3>AI Scoring Weight</h3>
                     <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:var(--space-md);">Hybrid formula: (Human × ${(1 - aiWeightVal).toFixed(1)}) + (AI × ${aiWeightVal.toFixed(1)})</p>
                     <div class="form-group"><label class="form-label">AI Weight (0.0 = human only, 1.0 = AI only)</label>
                         <input class="form-input" id="set-ai-weight" type="number" min="0" max="1" step="0.1" value="${aiWeightVal}" style="max-width:150px;"></div>
@@ -1042,7 +1424,7 @@
                 </div></div>
                 <div class="glass-card no-hover" style="margin-bottom:var(--space-lg);">
                     <h2 style="font-size:1.3rem;font-weight:700;margin-bottom:var(--space-sm);">${escHtml(myProject.name)}
-                        ${lb.hasAI ? '<span class="ai-eval-badge">🤖 AI Scored</span>' : ''}</h2>
+                        ${lb.hasAI ? '<span class="ai-eval-badge">AI Scored</span>' : ''}</h2>
                     <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:var(--space-md);">${escHtml(myProject.description || 'No description')}</p>
                     <div style="margin-bottom:var(--space-sm);">${(myProject.members || []).map(m => '<span class="member-chip">' + escHtml(m) + '</span>').join('')}</div>
                     <div style="margin-bottom:var(--space-md);">${(myProject.techStack || []).map(t => '<span class="tech-chip">' + escHtml(t) + '</span>').join('')}</div>
@@ -1067,7 +1449,7 @@
                     <div class="file-list" id="mp-file-list"></div>
                 </div>
                 ${aiEval ? `<div class="ai-eval-card">
-                    <div class="ai-eval-header"><span class="ai-eval-badge">🤖 AI Evaluation</span><span class="ai-eval-model">${escHtml(aiEval.model)}</span></div>
+                    <div class="ai-eval-header"><span class="ai-eval-badge">AI Evaluation</span><span class="ai-eval-model">${escHtml(aiEval.model)}</span></div>
                     <div class="ai-eval-feedback">${escHtml(aiEval.overallFeedback)}</div>
                 </div>` : ''}`;
 
@@ -1138,7 +1520,28 @@
         }
     }
 
+    // ─── Landing → auth wiring ──────────────────────────────────
+    function wireLanding() {
+        const goSignIn  = () => showAuthScreen('login');
+        const goSignUp  = () => showAuthScreen('register');
+        const back      = () => showView('landing');
+        const map = {
+            'btn-landing-signin': goSignIn,
+            'btn-landing-signup': goSignUp,
+            'btn-hero-signin':    goSignIn,
+            'btn-hero-signup':    goSignUp,
+            'btn-cta-signin':     goSignIn,
+            'btn-cta-signup':     goSignUp,
+            'auth-back':          back,
+        };
+        for (const [id, fn] of Object.entries(map)) {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('click', fn);
+        }
+    }
+
     // ─── INIT ────────────────────────────────────────────────────
+    wireLanding();
     setupAuthForm();
     checkAuth();
 })();

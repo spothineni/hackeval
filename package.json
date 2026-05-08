@@ -5,16 +5,22 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1003.0",
+    "@aws-sdk/client-s3": "^3.1045.0",
+    "@aws-sdk/s3-request-presigner": "^3.1045.0",
+    "@google-cloud/storage": "^7.19.0",
     "adm-zip": "^0.5.16",
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.5.1",
     "jsonwebtoken": "^9.0.3",
-    "multer": "^2.1.1"
+    "multer": "^2.1.1",
+    "openai": "^4.100.0",
+    "pg": "^8.20.0"
   }
 }

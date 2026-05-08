@@ -5,28 +5,211 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description"
-        content="Hackathon Evaluator — Score, rank, and manage hackathon submissions with a beautiful judging interface.">
-    <title>Hackathon Evaluator</title>
+        content="HackEval — AI-powered hackathon evaluation and management platform. Score, rank, and manage submissions.">
+    <title>HackEval — AI-Powered Hackathon Platform</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
-    <!-- Ambient background blobs -->
-    <div class="ambient-bg">
-        <div class="blob blob-1"></div>
-        <div class="blob blob-2"></div>
-        <div class="blob blob-3"></div>
+    <!-- ════════════════════════════════════════════════════════
+         LANDING PAGE (shown to unauthenticated visitors)
+         ════════════════════════════════════════════════════════ -->
+    <div class="landing" id="landing">
+        <nav class="landing-nav">
+            <div class="landing-logo">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <span>HackEval</span>
+            </div>
+            <div class="landing-nav-links">
+                <a href="#features">Features</a>
+                <a href="#how-it-works">How it works</a>
+                <a href="#roles">Roles</a>
+            </div>
+            <div class="landing-nav-actions">
+                <button class="btn btn-ghost" id="btn-landing-signin">Sign in</button>
+                <button class="btn btn-primary" id="btn-landing-signup">Get started</button>
+            </div>
+        </nav>
+
+        <!-- Hero -->
+        <section class="landing-hero">
+            <div class="landing-hero-eyebrow">
+                <span class="hero-pill"><span class="hero-pill-dot"></span> AI-assisted hackathon evaluation</span>
+            </div>
+            <h1 class="landing-hero-title">
+                Run a hackathon.<br>
+                <span class="hero-gradient">Score it fairly with AI.</span>
+            </h1>
+            <p class="landing-hero-subtitle">
+                Multi-tenant platform for organizers, judges, and participants.
+                Submit projects, score with sliders, blend human and AI evaluation,
+                and settle the leaderboard — all in one place.
+            </p>
+            <div class="landing-hero-actions">
+                <button class="btn btn-primary btn-lg" id="btn-hero-signup">Start your hackathon →</button>
+                <button class="btn btn-ghost btn-lg" id="btn-hero-signin">Sign in</button>
+            </div>
+            <ul class="landing-hero-trust">
+                <li>✓ Multi-tenant — run many events</li>
+                <li>✓ OpenAI · AWS Bedrock</li>
+                <li>✓ Self-hostable</li>
+                <li>✓ Open source</li>
+            </ul>
+        </section>
+
+        <!-- Stats strip -->
+        <section class="landing-stats">
+            <div class="stat-card"><div class="stat-num">4</div><div class="stat-label">Roles</div></div>
+            <div class="stat-card"><div class="stat-num">2</div><div class="stat-label">AI providers</div></div>
+            <div class="stat-card"><div class="stat-num">∞</div><div class="stat-label">Hackathons</div></div>
+            <div class="stat-card"><div class="stat-num">100%</div><div class="stat-label">Audited</div></div>
+        </section>
+
+        <!-- Features -->
+        <section class="landing-features" id="features">
+            <h2 class="landing-section-eyebrow">Features</h2>
+            <h3 class="landing-section-title">Everything to run a competitive event</h3>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon feature-icon-indigo">⚡</div>
+                    <h4>AI evaluation</h4>
+                    <p>OpenAI GPT-4o → AWS Bedrock Claude → simulated fallback. Configurable hybrid weight blends human and AI scores on the leaderboard.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon feature-icon-emerald">🏟️</div>
+                    <h4>Multi-tenant</h4>
+                    <p>One deployment, many hackathons. Each event has its own projects, criteria, members, and leaderboard — fully isolated.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon feature-icon-amber">✓</div>
+                    <h4>Approval workflow</h4>
+                    <p>Organizers create, system admins approve. Status badges keep pending events out of the participant view until they're live.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon feature-icon-cyan">📦</div>
+                    <h4>File submissions</h4>
+                    <p>Drag-and-drop up to 50 files per project, including zips with safe extraction. Stored in S3 or GCS with signed URLs.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon feature-icon-indigo">📊</div>
+                    <h4>Hybrid leaderboard</h4>
+                    <p>Weighted scoring across configurable criteria. Real-time rank updates. Drill into per-criterion averages and judge notes.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon feature-icon-emerald">🛡️</div>
+                    <h4>Audit-ready</h4>
+                    <p>Every mutation recorded — who, what, when. Append-only audit log per hackathon, queryable with filters and pagination.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- How it works -->
+        <section class="landing-flow" id="how-it-works">
+            <h2 class="landing-section-eyebrow">Workflow</h2>
+            <h3 class="landing-section-title">From idea to leaderboard in four steps</h3>
+            <div class="flow-grid">
+                <div class="flow-card">
+                    <div class="flow-num">01</div>
+                    <h4>Organizer creates</h4>
+                    <p>Sets up the hackathon — name, criteria, weights — and invites judges. Awaits admin approval.</p>
+                </div>
+                <div class="flow-card">
+                    <div class="flow-num">02</div>
+                    <h4>Admin approves</h4>
+                    <p>System admin reviews and approves. Event status flips to <code>active</code> and becomes joinable.</p>
+                </div>
+                <div class="flow-card">
+                    <div class="flow-num">03</div>
+                    <h4>Participants join</h4>
+                    <p>Users complete a profile (bio, skills, links), join the event, and submit a project with files.</p>
+                </div>
+                <div class="flow-card">
+                    <div class="flow-num">04</div>
+                    <h4>Judges score</h4>
+                    <p>Judges read profiles, score with sliders. AI evaluation runs on demand. Leaderboard updates live.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Roles -->
+        <section class="landing-roles" id="roles">
+            <h2 class="landing-section-eyebrow">Roles</h2>
+            <h3 class="landing-section-title">Built for everyone in the room</h3>
+            <div class="role-grid">
+                <div class="role-card">
+                    <div class="role-tag role-tag-indigo">System admin</div>
+                    <h4>Run the platform</h4>
+                    <ul>
+                        <li>Approve / reject hackathons</li>
+                        <li>Manage global users</li>
+                        <li>Cross-event audit log</li>
+                    </ul>
+                </div>
+                <div class="role-card">
+                    <div class="role-tag role-tag-emerald">Organizer</div>
+                    <h4>Run an event</h4>
+                    <ul>
+                        <li>Create hackathons</li>
+                        <li>Define criteria &amp; weights</li>
+                        <li>Assign judges, manage members</li>
+                    </ul>
+                </div>
+                <div class="role-card">
+                    <div class="role-tag role-tag-amber">Judge</div>
+                    <h4>Score submissions</h4>
+                    <ul>
+                        <li>Review participant profiles</li>
+                        <li>Slider-based scoring</li>
+                        <li>Read AI evaluations side by side</li>
+                    </ul>
+                </div>
+                <div class="role-card">
+                    <div class="role-tag role-tag-cyan">Participant</div>
+                    <h4>Build &amp; submit</h4>
+                    <ul>
+                        <li>Profile with bio &amp; skills</li>
+                        <li>Submit project &amp; files</li>
+                        <li>See results when judging closes</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- Final CTA -->
+        <section class="landing-cta-final">
+            <h2>Ready to run your hackathon?</h2>
+            <p>Sign up, create your event, and have judges scoring within minutes.</p>
+            <div class="landing-hero-actions">
+                <button class="btn btn-primary btn-lg" id="btn-cta-signup">Get started — it's free</button>
+                <button class="btn btn-ghost btn-lg" id="btn-cta-signin">I have an account</button>
+            </div>
+        </section>
+
+        <footer class="landing-footer">
+            <div class="landing-logo">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <span>HackEval</span>
+            </div>
+            <div class="landing-footer-links">
+                <a href="#features">Features</a>
+                <a href="#how-it-works">How it works</a>
+                <a href="#roles">Roles</a>
+                <a href="https://github.com/spothineni/hackeval" target="_blank" rel="noopener">GitHub</a>
+            </div>
+            <div class="landing-footer-tag">Open source · Self-hostable</div>
+        </footer>
     </div>
 
     <!-- Auth Screen (Login / Register) -->
-    <div class="auth-screen" id="auth-screen">
-        <div class="auth-card glass-card no-hover" id="auth-card">
+    <div class="auth-screen" id="auth-screen" style="display:none;">
+        <button type="button" class="auth-back" id="auth-back" aria-label="Back to landing page">← Back</button>
+        <div class="auth-card" id="auth-card">
             <div class="auth-logo">
-                <span class="auth-logo-icon">⚡</span>
+                <svg class="auth-logo-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                 <span class="auth-logo-text">HackEval</span>
             </div>
             <p class="auth-subtitle" id="auth-subtitle">Sign in to your account</p>
@@ -67,47 +250,47 @@
         <nav class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <div class="logo">
-                    <span class="logo-icon">⚡</span>
+                    <span class="logo-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
                     <span class="logo-text" id="sidebar-title">HackEval</span>
                 </div>
                 <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
-                    <span class="toggle-icon">☰</span>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
                 </button>
             </div>
             <ul class="nav-links">
                 <li>
                     <a href="#dashboard" class="nav-link active" data-page="dashboard" id="nav-dashboard">
-                        <span class="nav-icon">📊</span>
+                        <span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="4" rx="1"/><rect x="14" y="11" width="7" height="10" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span>
                         <span class="nav-label">Dashboard</span>
                     </a>
                 </li>
                 <li id="nav-projects-item">
                     <a href="#projects" class="nav-link" data-page="projects" id="nav-projects">
-                        <span class="nav-icon">🚀</span>
+                        <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
                         <span class="nav-label">Projects</span>
                     </a>
                 </li>
                 <li id="nav-myproject-item">
                     <a href="#myproject" class="nav-link" data-page="myproject" id="nav-myproject">
-                        <span class="nav-icon">📂</span>
+                        <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg></span>
                         <span class="nav-label">My Project</span>
                     </a>
                 </li>
                 <li id="nav-judging-item">
                     <a href="#judging" class="nav-link" data-page="judging" id="nav-judging">
-                        <span class="nav-icon">⭐</span>
+                        <span class="nav-icon"><svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span>
                         <span class="nav-label">Judging</span>
                     </a>
                 </li>
                 <li>
                     <a href="#leaderboard" class="nav-link" data-page="leaderboard" id="nav-leaderboard">
-                        <span class="nav-icon">🏆</span>
+                        <span class="nav-icon"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
                         <span class="nav-label">Leaderboard</span>
                     </a>
                 </li>
                 <li id="nav-settings-item">
                     <a href="#settings" class="nav-link" data-page="settings" id="nav-settings">
-                        <span class="nav-icon">⚙️</span>
+                        <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
                         <span class="nav-label">Settings</span>
                     </a>
                 </li>
@@ -121,7 +304,7 @@
                     </div>
                 </div>
                 <button class="btn-logout" id="btn-logout" title="Sign out">
-                    <span>🚪</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
                     <span class="nav-label">Sign Out</span>
                 </button>
                 <div class="hackathon-badge" id="hackathon-badge">

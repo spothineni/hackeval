@@ -1,0 +1,15 @@
+.gcloudignore
+.git
+.gitignore
+node_modules/
+hackathon.db
+hackathon.db-shm
+hackathon.db-wal
+uploads/
+terraform/
+docs/
+fly.toml
+railway.json
+render.yaml
+README.md
+*.sh

@@ -1,8 +1,27 @@
 node_modules/
+
+# Local SQLite leftovers (legacy)
 hackathon.db
 hackathon.db-shm
 hackathon.db-wal
-uploads/
+
+# Uploaded artifacts (keep the dir via .gitkeep)
+uploads/*
+!uploads/.gitkeep
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+*.bak
+*.swp
+.DS_Store
+
+# Test artifacts
+test.zip
+coverage/
 
 # Terraform
 terraform/.terraform/

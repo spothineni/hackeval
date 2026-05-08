@@ -6,12 +6,14 @@ services:
     name: hackeval
     runtime: node
     plan: free
-    buildCommand: npm install && npm rebuild better-sqlite3
+    buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
       - key: JWT_SECRET
         generateValue: true
+      - key: DATABASE_URL
+        sync: false
       - key: PORT
         value: 3000
