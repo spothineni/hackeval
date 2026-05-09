@@ -61,3 +61,20 @@ variable "tags" {
     ManagedBy   = "terraform"
   }
 }
+
+# SSM Parameter Store prefix for the app's runtime secrets. The EC2 user-data
+# bootstrap reads JWT_SECRET, DATABASE_URL, etc. from `${ssm_param_prefix}/*`.
+variable "ssm_param_prefix" {
+  description = "SSM Parameter Store path prefix for runtime secrets (without trailing slash)"
+  type        = string
+  default     = "/hackeval/prod"
+}
+
+# Optional KMS key ARN that decrypts the SecureString parameters above. Leave
+# empty to allow the AWS-managed `alias/aws/ssm` key (the default for SSM
+# SecureStrings created without a custom CMK).
+variable "ssm_kms_key_arn" {
+  description = "KMS key ARN used to encrypt the SSM SecureStrings (empty = AWS-managed alias/aws/ssm)"
+  type        = string
+  default     = ""
+}

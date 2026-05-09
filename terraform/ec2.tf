@@ -9,6 +9,10 @@ resource "aws_instance" "app" {
   subnet_id              = aws_subnet.public_a.id
   vpc_security_group_ids = [aws_security_group.ec2.id]
 
+  # NOTE: keep var.ssm_param_prefix in sync with the SSM_PREFIX default
+  # inside userdata.sh. Using `templatefile()` would let Terraform inject it
+  # but would force every `${BASH_VAR}` in the script to be escaped — too
+  # noisy for the trade-off.
   user_data = file("${path.module}/userdata.sh")
 
   root_block_device {
@@ -71,10 +75,56 @@ resource "aws_iam_instance_profile" "ec2" {
   tags = var.tags
 }
 
-# SSM Session Manager access (no SSH key needed)
+# SSM Session Manager access (no SSH key needed). This managed policy covers
+# the agent's session/registration calls but does NOT include
+# ssm:GetParameter — that's a separate scoped policy below.
 resource "aws_iam_role_policy_attachment" "ssm" {
   role       = aws_iam_role.ec2.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# Read app secrets at boot. Scoped to one prefix so a compromised instance
+# can't enumerate other apps' parameters in the account.
+data "aws_caller_identity" "current" {}
+
+resource "aws_iam_role_policy" "ssm_param_read" {
+  name = "${var.project_name}-ssm-param-read"
+  role = aws_iam_role.ec2.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat(
+      [{
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath",
+        ]
+        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_param_prefix}/*"
+      }],
+      # SecureStrings need kms:Decrypt against the encrypting key. If the
+      # operator hasn't provided a custom CMK we still need to allow the
+      # AWS-managed key (alias/aws/ssm); we restrict by ViaService context
+      # rather than ARN since that key's ARN varies per account/region.
+      [
+        var.ssm_kms_key_arn != "" ? {
+          Effect   = "Allow"
+          Action   = ["kms:Decrypt"]
+          Resource = var.ssm_kms_key_arn
+        } : {
+          Effect   = "Allow"
+          Action   = ["kms:Decrypt"]
+          Resource = "*"
+          Condition = {
+            StringEquals = {
+              "kms:ViaService" = "ssm.${var.aws_region}.amazonaws.com"
+            }
+          }
+        }
+      ]
+    )
+  })
 }
 
 # ═══════════════════════════════════════════════════════════

@@ -12,6 +12,17 @@ PROJECT_ID="${GCP_PROJECT_ID:-project-57e0fc06-1d0f-465d-ac8}"
 REGION="${GCP_REGION:-us-central1}"
 SERVICE_NAME="hackathon-evaluator"
 IMAGE_NAME="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
+# Cloud Run filesystems are ephemeral — uploads MUST go to a durable bucket.
+STORAGE_BUCKET="${HACKEVAL_STORAGE_BUCKET:-${PROJECT_ID}-hackeval-uploads}"
+# APP_URL is REQUIRED in production — reset/email links derived from the
+# Host header would otherwise be spoofable by upstream proxies.
+# Set HACKEVAL_APP_URL=https://your.domain before running this script.
+APP_URL="${HACKEVAL_APP_URL:-}"
+if [ -z "$APP_URL" ]; then
+  echo "❌ HACKEVAL_APP_URL is not set. Production reset/email links would fall back to the request Host header, which is spoofable." >&2
+  echo "   Set: export HACKEVAL_APP_URL=https://your.domain   then re-run." >&2
+  exit 1
+fi
 
 # ── Colors ────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -92,6 +103,37 @@ gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
   --project="$PROJECT_ID" \
   --quiet 2>/dev/null || warn "Could not bind secret IAM (may already exist, continuing...)"
 
+# ── Step 5b: Provision GCS bucket for uploads ─────────────────────
+# Cloud Run instances have ephemeral storage — without a durable backend,
+# uploaded submissions vanish on restart or autoscale. Create the bucket
+# (idempotent) and grant the runtime service account read/write.
+info "Ensuring GCS bucket for uploads: gs://${STORAGE_BUCKET}"
+gcloud services enable storage.googleapis.com --quiet --project="$PROJECT_ID"
+if ! gcloud storage buckets describe "gs://${STORAGE_BUCKET}" --project="$PROJECT_ID" &>/dev/null; then
+  warn "Bucket not found. Creating gs://${STORAGE_BUCKET} in ${REGION}..."
+  gcloud storage buckets create "gs://${STORAGE_BUCKET}" \
+    --project="$PROJECT_ID" \
+    --location="$REGION" \
+    --uniform-bucket-level-access \
+    --quiet
+  success "Bucket created."
+else
+  success "Bucket already exists."
+fi
+# Service account needs object admin on the bucket plus token-creator on
+# itself (V4 signed URLs need a credential to sign with; in workload
+# identity this comes via IAM SignBlob).
+gcloud storage buckets add-iam-policy-binding "gs://${STORAGE_BUCKET}" \
+  --member="serviceAccount:${COMPUTE_SA}" \
+  --role="roles/storage.objectAdmin" \
+  --project="$PROJECT_ID" --quiet 2>/dev/null \
+  || warn "Bucket IAM may already exist, continuing..."
+gcloud iam service-accounts add-iam-policy-binding "${COMPUTE_SA}" \
+  --member="serviceAccount:${COMPUTE_SA}" \
+  --role="roles/iam.serviceAccountTokenCreator" \
+  --project="$PROJECT_ID" --quiet 2>/dev/null \
+  || warn "TokenCreator binding may already exist, continuing..."
+
 # ── Step 6: Grant Cloud Build permission to push to GCR ──────────
 info "Granting Cloud Build storage permissions..."
 CLOUDBUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
@@ -125,7 +167,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --max-instances=5 \
   --timeout=300 \
   --set-secrets="JWT_SECRET=${SECRET_NAME}:latest,OPENAI_API_KEY=openai-api-key:latest,DATABASE_URL=neon-database-url:latest,SMTP_USER=zoho-smtp-user:latest,SMTP_PASS=zoho-smtp-pass:latest" \
-  --set-env-vars="NODE_ENV=production,AWS_REGION=us-east-1,OPENAI_MODEL=gpt-4o" \
+  --set-env-vars="NODE_ENV=production,AWS_REGION=us-east-1,OPENAI_MODEL=gpt-4o,STORAGE_PROVIDER=gcs,STORAGE_BUCKET=${STORAGE_BUCKET},APP_URL=${APP_URL}" \
   --quiet
 
 # ── Step 9: Print service URL ─────────────────────────────────────
@@ -142,8 +184,8 @@ echo -e "  ${CYAN}Service URL:${NC}  ${SERVICE_URL}"
 echo -e "  ${CYAN}Region:${NC}       ${REGION}"
 echo -e "  ${CYAN}Project:${NC}      ${PROJECT_ID}"
 echo ""
-echo -e "  ${YELLOW}Default login:${NC}  admin / admin123"
-echo -e "  ${YELLOW}⚠️  Change the admin password immediately after login!${NC}"
+echo -e "  ${YELLOW}Default login:${NC}  username \`admin\`, password printed ONCE in the logs on first start"
+echo -e "  ${YELLOW}Find it with:${NC}    gcloud run services logs read ${SERVICE_NAME} --region=${REGION} | grep -A1 'INITIAL ADMIN'"
 echo ""
 echo -e "  View logs:  gcloud run services logs read ${SERVICE_NAME} --region=${REGION}"
 echo ""

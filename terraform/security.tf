@@ -19,16 +19,9 @@ resource "aws_security_group" "ec2" {
     }
   }
 
-  # App port (direct access, useful for testing)
-  ingress {
-    description = "Node.js app"
-    from_port   = var.app_port
-    to_port     = var.app_port
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # Allow traffic from ALB
+  # The app port is reachable ONLY from the ALB security group. The ALB
+  # terminates TLS and is the public entry point; never expose 3000 to the
+  # internet directly (it bypasses the ALB's listener rules and TLS).
   ingress {
     description     = "HTTP from ALB"
     from_port       = var.app_port

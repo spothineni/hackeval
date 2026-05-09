@@ -272,13 +272,9 @@ app.get('/health', async (req, res) => {
 });
 
 // ─── Helper: UUID ───────────────────────────────────────────
-function uuid() {
-    return 'xxxx-xxxx-4xxx-yxxx'.replace(/[xy]/g, c => {
-        const r = Math.random() * 16 | 0;
-        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-    });
-
-}
+// Cryptographically random v4 UUID. Predecessor used Math.random which
+// produced low-entropy IDs; not catastrophic but trivially predictable.
+const uuid = () => crypto.randomUUID();
 
 // ─── Auth Cookies & CSRF ─────────────────────────────────────
 // Session token lives in an HttpOnly cookie so XSS can't read it. The CSRF
@@ -391,10 +387,28 @@ async function urlFor(storedName, originalName) {
 }
 
 // Accepts either Bearer auth (existing behavior) OR a valid file ticket.
+// When a ticket is used, marks the request so downstream auth-z can skip the
+// hackathon-membership check (the ticket itself is scoped to a single
+// stored_name, issued only to a member of the file's hackathon).
 function requireAuthOrFileTicket(req, res, next) {
     const ticket = req.query.t;
-    if (ticket && verifyFileTicket(String(ticket), req.params.storedName)) return next();
+    if (ticket && verifyFileTicket(String(ticket), req.params.storedName)) {
+        req.fileTicketUsed = true;
+        return next();
+    }
     return requireAuth(req, res, next);
+}
+
+// Authorization gate for file reads: confirms the authenticated user can
+// access the project the file belongs to. Without this, any authenticated
+// user could fetch any file by guessing/discovering its stored_name.
+async function ensureUserCanReadFile(req, file) {
+    if (req.fileTicketUsed) return true;                         // ticket is pre-scoped
+    if (req.user?.systemRole === 'system_admin') return true;    // sysadmin sees all
+    const project = await db.get('SELECT hackathon_id, created_by FROM projects WHERE id = ?', [file.project_id]);
+    if (!project) return false;
+    const role = await getMembershipRole(req.user?.id, project.hackathon_id);
+    return !!role; // any membership in the file's hackathon is enough to read
 }
 
 // Verifies a `:id` (or `:projectId`) belongs to the currently scoped
@@ -495,7 +509,12 @@ app.post('/api/auth/logout', (req, res) => {
 // link is logged to stderr so you can complete the flow without email.
 
 const APP_URL = (process.env.APP_URL || '').replace(/\/$/, '') || null;
+if (isProd && !APP_URL) {
+    console.warn('[WARN] APP_URL is not set. Reset links will be derived from the Host header, which an attacker can spoof. Set APP_URL=https://your.domain in production.');
+}
 function buildResetUrl(req, token) {
+    // Prefer APP_URL — Host header can be spoofed by upstream proxies and
+    // would let an attacker who triggers a reset email control the link target.
     const origin = APP_URL || `${req.protocol}://${req.get('host')}`;
     return `${origin}/?reset=${encodeURIComponent(token)}`;
 }
@@ -1353,9 +1372,10 @@ app.post('/api/projects/:id/files', requireAuth, requireProjectOwnerOrAdmin, req
                 inserted.push({ id, originalName: f.originalname, size: f.size });
             }
         } else {
-            // Regular file — push to backing storage and unlink the temp file in S3 mode.
+            // Regular file — push to backing storage and unlink the temp file
+            // when a cloud backend (S3 or GCS) holds the durable copy.
             await storage.putFromPath(f.filename, f.path, f.mimetype);
-            if (storageLib.isS3) fs.unlinkSync(f.path);
+            if (storageLib.isCloud) fs.unlinkSync(f.path);
             const id = uuid();
             await db.run('INSERT INTO project_files (id, project_id, original_name, stored_name, mime_type, size) VALUES (?, ?, ?, ?, ?, ?)', [id, projectId, f.originalname, f.filename, f.mimetype, f.size]);
             inserted.push({ id, originalName: f.originalname, size: f.size });
@@ -1409,6 +1429,9 @@ app.delete('/api/projects/:projectId/files/:fileId', requireAuth, requireProject
 app.get('/api/files/:storedName', requireAuthOrFileTicket, asyncHandler(async (req, res) => {
     const file = await db.get('SELECT * FROM project_files WHERE stored_name = ?', [req.params.storedName]);
     if (!file) return res.status(404).json({ error: 'File not found' });
+    if (!(await ensureUserCanReadFile(req, file))) {
+        return res.status(404).json({ error: 'File not found' }); // 404 (not 403) so we don't leak existence
+    }
     await storage.sendFile(res, file.stored_name, {
         filename: file.original_name,
         disposition: 'inline',
@@ -1418,6 +1441,9 @@ app.get('/api/files/:storedName', requireAuthOrFileTicket, asyncHandler(async (r
 app.get('/api/files/:storedName/content', requireAuth, asyncHandler(async (req, res) => {
     const file = await db.get('SELECT * FROM project_files WHERE stored_name = ?', [req.params.storedName]);
     if (!file) return res.status(404).json({ error: 'File not found' });
+    if (!(await ensureUserCanReadFile(req, file))) {
+        return res.status(404).json({ error: 'File not found' });
+    }
 
     const textExtensions = ['.txt', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h',
         '.go', '.rs', '.html', '.css', '.json', '.yaml', '.yml', '.xml', '.csv', '.sh', '.bash',
@@ -1807,24 +1833,63 @@ app.get('/api/export', requireAuth, requireAdmin, asyncHandler(async (req, res) 
     res.json({ settings, criteria, projects, evaluations });
 }));
 
+// Helper for queries inside a transaction. Converts our ?-style placeholders
+// to $N positional ones for pg's client.query (db.run does this in the
+// pool, but inside a transaction we hold the raw client).
+function txRun(client) {
+    return (sql, params) => {
+        let i = 0;
+        return client.query(sql.replace(/\?/g, () => `$${++i}`), params);
+    };
+}
+
+// Validate the import payload BEFORE we delete anything. A schema-mismatch
+// error mid-import shouldn't leave the hackathon empty.
+function validateImportPayload(body) {
+    if (body == null || typeof body !== 'object') return 'payload must be an object';
+    const { settings, criteria, projects, evaluations } = body;
+    if (settings != null && (typeof settings !== 'object' || Array.isArray(settings))) {
+        return 'settings must be an object';
+    }
+    if (criteria != null && !Array.isArray(criteria)) return 'criteria must be an array';
+    if (projects != null && !Array.isArray(projects)) return 'projects must be an array';
+    if (evaluations != null && !Array.isArray(evaluations)) return 'evaluations must be an array';
+    for (const c of (criteria || [])) {
+        if (!c || typeof c.id !== 'string' || typeof c.name !== 'string') return 'each criterion needs string id and name';
+    }
+    for (const p of (projects || [])) {
+        if (!p || typeof p.id !== 'string' || typeof p.name !== 'string') return 'each project needs string id and name';
+    }
+    for (const e of (evaluations || [])) {
+        if (!e || typeof e.id !== 'string') return 'each evaluation needs a string id';
+        const pid = e.projectId || e.project_id;
+        if (typeof pid !== 'string') return 'each evaluation needs a projectId';
+    }
+    return null;
+}
+
 app.post('/api/import', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+    const err = validateImportPayload(req.body);
+    if (err) return res.status(400).json({ error: err });
     const { settings, criteria, projects, evaluations } = req.body;
     const hid = req.hackathonId;
-    try {
-        // Scope all destructive ops to the current hackathon only — other
-        // events stay untouched.
-        await db.run('DELETE FROM evaluations WHERE hackathon_id = ?', [hid]);
-        await db.run('DELETE FROM projects WHERE hackathon_id = ?', [hid]);
-        await db.run('DELETE FROM criteria WHERE hackathon_id = ?', [hid]);
-        await db.run('DELETE FROM settings WHERE hackathon_id = ?', [hid]);
+
+    // All destructive + recreate steps run in one transaction. A failure
+    // anywhere rolls back, leaving the hackathon's data exactly as it was.
+    await db.transaction(async (client) => {
+        const run = txRun(client);
+        await run('DELETE FROM evaluations WHERE hackathon_id = ?', [hid]);
+        await run('DELETE FROM projects WHERE hackathon_id = ?', [hid]);
+        await run('DELETE FROM criteria WHERE hackathon_id = ?', [hid]);
+        await run('DELETE FROM settings WHERE hackathon_id = ?', [hid]);
         if (settings) {
             for (const [k, v] of Object.entries(settings))
-                await db.run('INSERT INTO settings (key, value, hackathon_id) VALUES (?, ?, ?)', [k, String(v), hid]);
+                await run('INSERT INTO settings (key, value, hackathon_id) VALUES (?, ?, ?)', [k, String(v), hid]);
         }
         if (criteria) {
             for (let i = 0; i < criteria.length; i++) {
                 const c = criteria[i];
-                await db.run(
+                await run(
                     'INSERT INTO criteria (id, name, weight, sort_order, hackathon_id) VALUES (?, ?, ?, ?, ?)',
                     [c.id, c.name, c.weight, i, hid]
                 );
@@ -1832,7 +1897,7 @@ app.post('/api/import', requireAuth, requireAdmin, asyncHandler(async (req, res)
         }
         if (projects) {
             for (const p of projects) {
-                await db.run(
+                await run(
                     `INSERT INTO projects (id, name, members, description, tech_stack, demo_url, created_at, hackathon_id)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
                     [p.id, p.name, JSON.stringify(p.members || []), p.description || '',
@@ -1843,7 +1908,7 @@ app.post('/api/import', requireAuth, requireAdmin, asyncHandler(async (req, res)
         }
         if (evaluations) {
             for (const e of evaluations) {
-                await db.run(
+                await run(
                     `INSERT INTO evaluations (id, project_id, judge_name, scores, notes, created_at, hackathon_id)
                      VALUES (?, ?, ?, ?, ?, ?, ?)`,
                     [e.id, e.projectId || e.project_id, e.judgeName || e.judge_name,
@@ -1852,29 +1917,29 @@ app.post('/api/import', requireAuth, requireAdmin, asyncHandler(async (req, res)
                 );
             }
         }
-        await recordAudit(req, 'data.import', null, null, {
-            counts: {
-                settings: settings ? Object.keys(settings).length : 0,
-                criteria: criteria?.length || 0,
-                projects: projects?.length || 0,
-                evaluations: evaluations?.length || 0,
-            },
-        });
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
+    await recordAudit(req, 'data.import', null, null, {
+        counts: {
+            settings: settings ? Object.keys(settings).length : 0,
+            criteria: criteria?.length || 0,
+            projects: projects?.length || 0,
+            evaluations: evaluations?.length || 0,
+        },
+    });
+    res.json({ success: true });
 }));
 
 app.post('/api/reset', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
     const hid = req.hackathonId;
-    try {
-        await db.run('DELETE FROM evaluations WHERE hackathon_id = ?', [hid]);
-        await db.run('DELETE FROM projects WHERE hackathon_id = ?', [hid]);
-        await db.run('DELETE FROM criteria WHERE hackathon_id = ?', [hid]);
-        await db.run('DELETE FROM settings WHERE hackathon_id = ?', [hid]);
-        await db.run("INSERT INTO settings (key, value, hackathon_id) VALUES ('hackathonName', 'TechHack 2026', ?)", [hid]);
-        await db.run("INSERT INTO settings (key, value, hackathon_id) VALUES ('aiWeight', '0.4', ?)", [hid]);
+    // Atomic: a failed reset shouldn't leave a hackathon stripped of data.
+    await db.transaction(async (client) => {
+        const run = txRun(client);
+        await run('DELETE FROM evaluations WHERE hackathon_id = ?', [hid]);
+        await run('DELETE FROM projects WHERE hackathon_id = ?', [hid]);
+        await run('DELETE FROM criteria WHERE hackathon_id = ?', [hid]);
+        await run('DELETE FROM settings WHERE hackathon_id = ?', [hid]);
+        await run("INSERT INTO settings (key, value, hackathon_id) VALUES ('hackathonName', 'TechHack 2026', ?)", [hid]);
+        await run("INSERT INTO settings (key, value, hackathon_id) VALUES ('aiWeight', '0.4', ?)", [hid]);
         const defaults = [
             ['innovation', 'Innovation', 1.0, 0],
             ['technical', 'Technical Complexity', 1.0, 1],
@@ -1883,16 +1948,14 @@ app.post('/api/reset', requireAuth, requireAdmin, asyncHandler(async (req, res) 
             ['impact', 'Impact & Viability', 1.0, 4]
         ];
         for (const [cid, cname, weight, sort] of defaults) {
-            await db.run(
+            await run(
                 'INSERT INTO criteria (id, name, weight, sort_order, hackathon_id) VALUES (?, ?, ?, ?, ?)',
                 [cid, cname, weight, sort, hid]
             );
         }
-        await recordAudit(req, 'data.reset', null, null);
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    });
+    await recordAudit(req, 'data.reset', null, null);
+    res.json({ success: true });
 }));
 
 // ═══════════════════════════════════════════════════════════
