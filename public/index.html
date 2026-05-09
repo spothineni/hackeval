@@ -201,6 +201,7 @@
                 <a href="#features">Features</a>
                 <a href="#how-it-works">How it works</a>
                 <a href="#roles">Roles</a>
+                <a href="privacy.html" target="_blank" rel="noopener">Privacy</a>
                 <a href="https://github.com/spothineni/hackeval" target="_blank" rel="noopener">GitHub</a>
             </div>
             <div class="landing-footer-tag">Open source · Self-hostable</div>
@@ -217,19 +218,19 @@
             </div>
             <p class="auth-subtitle" id="auth-subtitle">Sign in to your account</p>
             <form id="auth-form" autocomplete="off">
-                <div class="form-group">
+                <div class="form-group" id="auth-username-group">
                     <label class="form-label" for="auth-username">Username</label>
-                    <input class="form-input" id="auth-username" placeholder="Enter username" required
+                    <input class="form-input" id="auth-username" placeholder="Enter username"
                         autocomplete="username">
                 </div>
-                <div class="form-group auth-register-field" id="auth-email-group" style="display:none;">
+                <div class="form-group" id="auth-email-group" style="display:none;">
                     <label class="form-label" for="auth-email">Email</label>
                     <input class="form-input" id="auth-email" type="email" placeholder="you@example.com"
                         autocomplete="email">
                 </div>
-                <div class="form-group">
+                <div class="form-group" id="auth-password-group">
                     <label class="form-label" for="auth-password">Password</label>
-                    <input class="form-input" id="auth-password" type="password" placeholder="Enter password" required
+                    <input class="form-input" id="auth-password" type="password" placeholder="Enter password"
                         autocomplete="current-password">
                 </div>
                 <div class="form-group auth-register-field" id="auth-displayname-group" style="display:none;">
@@ -245,11 +246,18 @@
                     <div class="auth-help">Organizers create events; an admin reviews each one before it goes live.</div>
                 </div>
                 <div id="auth-error" class="auth-error" style="display:none;"></div>
+                <div id="auth-success" class="auth-success" style="display:none;"></div>
                 <button type="submit" class="btn btn-primary auth-submit" id="auth-submit">Sign In</button>
             </form>
+            <div class="auth-forgot" id="auth-forgot-row">
+                <a href="#" id="auth-forgot-link" class="auth-toggle-link">Forgot password?</a>
+            </div>
             <div class="auth-toggle">
                 <span id="auth-toggle-text">Don't have an account?</span>
                 <a href="#" id="auth-toggle-link" class="auth-toggle-link">Create one</a>
+            </div>
+            <div class="auth-legal">
+                By continuing you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.
             </div>
         </div>
     </div>
@@ -346,6 +354,16 @@
 
     <!-- Toast Container -->
     <div class="toast-container" id="toast-container"></div>
+
+    <!-- Cookie consent banner (shown until dismissed; flag stored in localStorage) -->
+    <div class="cookie-banner" id="cookie-banner" role="dialog" aria-label="Cookie notice" style="display:none;">
+        <div class="cookie-banner-text">
+            🍪 We use <strong>only strictly necessary cookies</strong> for sign-in (`hackeval_session`)
+            and CSRF protection (`hackeval_csrf`). No tracking, no analytics.
+            <a href="privacy.html" target="_blank" rel="noopener">Read privacy policy →</a>
+        </div>
+        <button class="btn btn-primary btn-sm" id="cookie-accept" type="button">Got it</button>
+    </div>
 
     <script src="app.js"></script>
 </body>

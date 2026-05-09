@@ -136,6 +136,50 @@
         return `<span style="font-size:0.7rem;padding:2px 8px;border-radius:99px;background:${colors[status] || 'var(--text-muted)'};color:#fff;text-transform:uppercase;">${escHtml(status)}</span>`;
     }
 
+    // Surfaces the time-based phase (upcoming/submissions/judging/ended/live)
+    // alongside the lifecycle status. Phase is computed server-side and
+    // embedded in the hackathon list response.
+    function phasePill(phase) {
+        if (!phase || phase === 'draft') return '';
+        const colors = {
+            upcoming:    '#06B6D4',  // cyan
+            submissions: '#10B981',  // emerald — submit now
+            judging:     '#F59E0B',  // amber — judges working
+            ended:       '#64748B',  // muted
+            live:        '#6366F1',  // indigo — no dates set
+        };
+        const labels = {
+            upcoming:    'Upcoming',
+            submissions: 'Submissions open',
+            judging:     'Judging',
+            ended:       'Ended',
+            live:        'Live',
+        };
+        const c = colors[phase] || '#64748B';
+        return `<span style="font-size:0.68rem;padding:2px 8px;border-radius:99px;background:${c}1f;color:${c};border:1px solid ${c}40;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.04em;">${escHtml(labels[phase] || phase)}</span>`;
+    }
+
+    function fmtLocalDate(iso) {
+        if (!iso) return '';
+        try {
+            const d = new Date(iso);
+            return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+        } catch { return iso; }
+    }
+    // datetime-local needs `YYYY-MM-DDTHH:mm` (no seconds, no TZ).
+    function isoToLocalInput(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return '';
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+    function localInputToIso(v) {
+        if (!v) return null;
+        const d = new Date(v);
+        return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
+
     async function showHackathonPicker() {
         // Refresh both lists every open so the modal reflects current state.
         let mine = [];
@@ -154,10 +198,10 @@
             <div class="hackathon-pick-item" data-hid="${escAttr(h.id)}"
                  style="padding:var(--space-md);border:1px solid var(--glass-border);border-radius:var(--radius-md);margin-bottom:var(--space-sm);display:flex;justify-content:space-between;align-items:center;gap:var(--space-md);">
                 <div style="cursor:${action === 'select' ? 'pointer' : 'default'};flex:1;" data-action="select">
-                    <div style="font-weight:600;display:flex;gap:var(--space-sm);align-items:center;">
-                        ${escHtml(h.name)} ${statusPill(h.status)}
+                    <div style="font-weight:600;display:flex;gap:var(--space-sm);align-items:center;flex-wrap:wrap;">
+                        ${escHtml(h.name)} ${statusPill(h.status)} ${phasePill(h.phase)}
                     </div>
-                    <div style="color:var(--text-muted);font-size:0.8rem;">${escHtml(h.slug)}${h.role ? ' · role: ' + escHtml(h.role) : ''}</div>
+                    <div style="color:var(--text-muted);font-size:0.8rem;">${escHtml(h.slug)}${h.role ? ' · role: ' + escHtml(h.role) : ''}${h.submissionDeadline ? ' · submissions until ' + escHtml(fmtLocalDate(h.submissionDeadline)) : ''}</div>
                 </div>
                 ${action === 'join' ? `<button class="btn btn-primary" data-action="join">Join</button>` : ''}
                 ${action === 'review' ? `
@@ -230,26 +274,74 @@
         document.getElementById('btn-edit-profile')?.addEventListener('click', showProfileModal);
     }
 
-    async function createHackathonPrompt() {
-        const slug = window.prompt('Slug (e.g. "techhack-2026"):');
-        if (!slug) return;
-        const name = window.prompt('Display name:');
-        if (!name) return;
-        const description = window.prompt('Short description (optional):') || '';
-        try {
-            const res = await api.post('/api/hackathons', { slug, name, description });
-            const msg = res.status === 'pending'
-                ? 'Hackathon created and submitted for admin approval.'
-                : 'Hackathon created.';
-            showToast(msg, 'success');
-            availableHackathons = await api.get('/api/hackathons');
-            const created = availableHackathons.find(h => h.slug === slug);
-            closeModal();
-            if (created && created.status === 'active') selectHackathon(created);
-            else showHackathonPicker();
-        } catch (err) {
-            showToast(err.message, 'error');
-        }
+    function createHackathonPrompt() {
+        const body = `
+            <div class="form-group"><label class="form-label">Display name</label>
+                <input class="form-input" id="ch-name" placeholder="My Awesome Hackathon" maxlength="200"></div>
+            <div class="form-group"><label class="form-label">Slug (URL-safe)</label>
+                <input class="form-input" id="ch-slug" placeholder="my-awesome-hackathon" maxlength="42" pattern="[a-z0-9][a-z0-9-]{1,40}"></div>
+            <div class="form-group"><label class="form-label">Description (optional)</label>
+                <textarea class="form-textarea" id="ch-desc" maxlength="5000" placeholder="What's this event about?"></textarea></div>
+            <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-md);">
+                <div class="form-group"><label class="form-label">Starts at</label>
+                    <input class="form-input" id="ch-starts" type="datetime-local"></div>
+                <div class="form-group"><label class="form-label">Submission deadline</label>
+                    <input class="form-input" id="ch-deadline" type="datetime-local"></div>
+            </div>
+            <div class="form-group"><label class="form-label">Ends at (results announced)</label>
+                <input class="form-input" id="ch-ends" type="datetime-local"></div>
+            <p style="color:var(--text-muted);font-size:0.78rem;line-height:1.5;">
+                Dates are optional — you can fill them in later from <em>Settings → Timing</em>.
+                ${isSystemAdmin() ? '' : 'Your hackathon will enter the <strong>pending</strong> queue for admin approval.'}
+            </p>
+        `;
+        openModal('New hackathon', body,
+            `<button class="btn btn-secondary" id="ch-cancel">Cancel</button>
+             <button class="btn btn-primary" id="ch-save">Create</button>`);
+
+        const nameEl = document.getElementById('ch-name');
+        const slugEl = document.getElementById('ch-slug');
+        // Auto-derive slug from name on first edit, until user touches the slug field.
+        let slugDirty = false;
+        slugEl.addEventListener('input', () => { slugDirty = true; });
+        nameEl.addEventListener('input', () => {
+            if (slugDirty) return;
+            slugEl.value = nameEl.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 42);
+        });
+
+        document.getElementById('ch-cancel').addEventListener('click', closeModal);
+        document.getElementById('ch-save').addEventListener('click', async () => {
+            const name = nameEl.value.trim();
+            const slug = slugEl.value.trim();
+            const description = document.getElementById('ch-desc').value.trim();
+            const startsAt = localInputToIso(document.getElementById('ch-starts').value);
+            const submissionDeadline = localInputToIso(document.getElementById('ch-deadline').value);
+            const endsAt = localInputToIso(document.getElementById('ch-ends').value);
+            if (!name) { showToast('Name is required', 'error'); return; }
+            if (!/^[a-z0-9][a-z0-9-]{1,40}$/.test(slug)) {
+                showToast('Slug must be 2-41 chars: lowercase letters, digits, hyphens', 'error');
+                return;
+            }
+            try {
+                const res = await api.post('/api/hackathons', {
+                    slug, name, description,
+                    startsAt, submissionDeadline, endsAt,
+                });
+                showToast(
+                    res.status === 'pending'
+                        ? 'Hackathon created — awaiting admin approval.'
+                        : 'Hackathon created.',
+                    'success'
+                );
+                availableHackathons = await api.get('/api/hackathons');
+                const created = availableHackathons.find(h => h.slug === slug);
+                closeModal();
+                if (created && created.status === 'active') selectHackathon(created);
+                else showHackathonPicker();
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
     }
 
     async function joinHackathonFlow(h) {
@@ -432,18 +524,82 @@
     // ─── Auth Form Logic ─────────────────────────────────────────
     let authMode = 'login';
 
+    // Holds the reset token captured from `?reset=<token>` so the form
+    // submit can use it. Cleared after a successful reset.
+    let resetTokenFromUrl = null;
+
     function setupAuthForm() {
         const form = document.getElementById('auth-form');
         const toggleLink = document.getElementById('auth-toggle-link');
+        const forgotLink = document.getElementById('auth-forgot-link');
         toggleLink.addEventListener('click', (e) => {
             e.preventDefault();
-            authMode = authMode === 'login' ? 'register' : 'login';
+            // login ↔ register; forgot/reset go back to login on toggle
+            if (authMode === 'forgot' || authMode === 'reset') authMode = 'login';
+            else authMode = authMode === 'login' ? 'register' : 'login';
             updateAuthMode();
         });
+        if (forgotLink) {
+            forgotLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                authMode = 'forgot';
+                updateAuthMode();
+            });
+        }
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             const errorEl = document.getElementById('auth-error');
+            const successEl = document.getElementById('auth-success');
             errorEl.style.display = 'none';
+            if (successEl) successEl.style.display = 'none';
+
+            // Forgot-password flow: only the email field is meaningful.
+            if (authMode === 'forgot') {
+                const email = document.getElementById('auth-email').value.trim();
+                if (!email) {
+                    errorEl.textContent = 'Email is required';
+                    errorEl.style.display = 'block';
+                    return;
+                }
+                try {
+                    const out = await api.post('/api/auth/forgot-password', { email });
+                    if (successEl) {
+                        successEl.textContent = out.message || 'If that email is registered, a reset link has been sent.';
+                        successEl.style.display = 'block';
+                    }
+                } catch (err) {
+                    errorEl.textContent = err.message;
+                    errorEl.style.display = 'block';
+                }
+                return;
+            }
+
+            // Reset-password flow: only the password field is meaningful.
+            // Token came from the URL on page load.
+            if (authMode === 'reset') {
+                const password = document.getElementById('auth-password').value;
+                if (!password || password.length < 8) {
+                    errorEl.textContent = 'Password must be at least 8 characters';
+                    errorEl.style.display = 'block';
+                    return;
+                }
+                try {
+                    await api.post('/api/auth/reset-password', { token: resetTokenFromUrl, password });
+                    showToast('Password updated — please sign in', 'success');
+                    resetTokenFromUrl = null;
+                    // Strip the ?reset=… query so it's not used twice.
+                    if (window.history?.replaceState) {
+                        window.history.replaceState({}, '', window.location.pathname);
+                    }
+                    authMode = 'login';
+                    updateAuthMode();
+                } catch (err) {
+                    errorEl.textContent = err.message;
+                    errorEl.style.display = 'block';
+                }
+                return;
+            }
+
             const username = document.getElementById('auth-username').value.trim();
             const password = document.getElementById('auth-password').value;
             if (!username || !password) {
@@ -488,20 +644,70 @@
         const submitBtn = document.getElementById('auth-submit');
         const toggleText = document.getElementById('auth-toggle-text');
         const toggleLink = document.getElementById('auth-toggle-link');
-        const registerFields = document.querySelectorAll('.auth-register-field');
+        const forgotRow = document.getElementById('auth-forgot-row');
+        const usernameGroup = document.getElementById('auth-username-group');
+        const passwordGroup = document.getElementById('auth-password-group');
+        const emailGroup = document.getElementById('auth-email-group');
+        const displayNameGroup = document.getElementById('auth-displayname-group');
+        const organizerGroup = document.getElementById('auth-organizer-group');
+        const passwordInput = document.getElementById('auth-password');
         document.getElementById('auth-error').style.display = 'none';
+        const successEl = document.getElementById('auth-success');
+        if (successEl) successEl.style.display = 'none';
+
+        const setShow = (el, on) => { if (el) el.style.display = on ? '' : 'none'; };
+
         if (authMode === 'login') {
             subtitle.textContent = 'Sign in to your account';
             submitBtn.textContent = 'Sign In';
             toggleText.textContent = "Don't have an account?";
             toggleLink.textContent = 'Create one';
-            registerFields.forEach(f => f.style.display = 'none');
-        } else {
+            setShow(usernameGroup, true);
+            setShow(passwordGroup, true);
+            setShow(emailGroup, false);
+            setShow(displayNameGroup, false);
+            setShow(organizerGroup, false);
+            setShow(forgotRow, true);
+            if (passwordInput) passwordInput.autocomplete = 'current-password';
+        } else if (authMode === 'register') {
             subtitle.textContent = 'Create a new account';
             submitBtn.textContent = 'Create Account';
             toggleText.textContent = 'Already have an account?';
             toggleLink.textContent = 'Sign in';
-            registerFields.forEach(f => f.style.display = 'block');
+            setShow(usernameGroup, true);
+            setShow(passwordGroup, true);
+            setShow(emailGroup, true);
+            setShow(displayNameGroup, true);
+            setShow(organizerGroup, true);
+            setShow(forgotRow, false);
+            if (passwordInput) passwordInput.autocomplete = 'new-password';
+        } else if (authMode === 'forgot') {
+            subtitle.textContent = 'Reset your password';
+            submitBtn.textContent = 'Send reset link';
+            toggleText.textContent = 'Remembered it?';
+            toggleLink.textContent = 'Back to sign in';
+            setShow(usernameGroup, false);
+            setShow(passwordGroup, false);
+            setShow(emailGroup, true);
+            setShow(displayNameGroup, false);
+            setShow(organizerGroup, false);
+            setShow(forgotRow, false);
+        } else if (authMode === 'reset') {
+            subtitle.textContent = 'Choose a new password';
+            submitBtn.textContent = 'Set new password';
+            toggleText.textContent = 'Changed your mind?';
+            toggleLink.textContent = 'Back to sign in';
+            setShow(usernameGroup, false);
+            setShow(passwordGroup, true);
+            setShow(emailGroup, false);
+            setShow(displayNameGroup, false);
+            setShow(organizerGroup, false);
+            setShow(forgotRow, false);
+            if (passwordInput) {
+                passwordInput.autocomplete = 'new-password';
+                passwordInput.placeholder = 'New password (min 8 chars)';
+                passwordInput.value = '';
+            }
         }
     }
 
@@ -1275,8 +1481,11 @@
             // /api/users is system_admin-only; skip the fetch for hackathon
             // admins who aren't system admins so they don't see a 403 toast.
             const userListPromise = isSystemAdmin() ? api.get('/api/users') : Promise.resolve([]);
-            const [settings, criteria, users] = await Promise.all([
-                api.get('/api/settings'), api.get('/api/criteria'), userListPromise,
+            const hackathonPromise = currentHackathon?.id
+                ? api.get(`/api/hackathons/${encodeURIComponent(currentHackathon.id)}`)
+                : Promise.resolve(null);
+            const [settings, criteria, users, hackathon] = await Promise.all([
+                api.get('/api/settings'), api.get('/api/criteria'), userListPromise, hackathonPromise,
             ]);
             const aiWeightVal = settings.aiWeight ? parseFloat(settings.aiWeight) : 0.4;
             container.innerHTML = `
@@ -1285,6 +1494,22 @@
                     <div class="form-group"><label class="form-label">Hackathon Name</label>
                         <input class="form-input" id="set-name" value="${escAttr(settings.hackathonName || '')}"></div>
                     <button class="btn btn-primary btn-sm" id="set-save-name">Save Name</button></div>
+                ${hackathon ? `
+                <div class="glass-card no-hover settings-section"><h3>⏱ Timing</h3>
+                    <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:var(--space-md);">
+                        Current phase: ${phasePill(hackathon.phase) || '<em>n/a</em>'} ·
+                        Submissions and judging are gated by these dates.
+                        Leave empty to remove a gate.
+                    </p>
+                    <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-md);">
+                        <div class="form-group"><label class="form-label">Starts at</label>
+                            <input class="form-input" id="set-starts" type="datetime-local" value="${escAttr(isoToLocalInput(hackathon.startsAt))}"></div>
+                        <div class="form-group"><label class="form-label">Submission deadline</label>
+                            <input class="form-input" id="set-deadline" type="datetime-local" value="${escAttr(isoToLocalInput(hackathon.submissionDeadline))}"></div>
+                    </div>
+                    <div class="form-group"><label class="form-label">Ends at</label>
+                        <input class="form-input" id="set-ends" type="datetime-local" value="${escAttr(isoToLocalInput(hackathon.endsAt))}"></div>
+                    <button class="btn btn-primary btn-sm" id="set-save-timing">Save Timing</button></div>` : ''}
                 <div class="glass-card no-hover settings-section"><h3>AI Scoring Weight</h3>
                     <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:var(--space-md);">Hybrid formula: (Human × ${(1 - aiWeightVal).toFixed(1)}) + (AI × ${aiWeightVal.toFixed(1)})</p>
                     <div class="form-group"><label class="form-label">AI Weight (0.0 = human only, 1.0 = AI only)</label>
@@ -1298,6 +1523,17 @@
                 <div class="glass-card no-hover settings-section"><h3>👥 User Management</h3>
                     <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:var(--space-md);">${users.length} registered user${users.length !== 1 ? 's' : ''} · system roles control who can create and approve hackathons</p>
                     <div class="users-list" id="users-list"></div></div>` : ''}
+                <div class="glass-card no-hover settings-section"><h3>📋 Audit Log</h3>
+                    <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:var(--space-md);">Append-only record of mutations for this hackathon.${isSystemAdmin() ? ' Toggle "Global" to view across events.' : ''}</p>
+                    <div style="display:flex;gap:var(--space-sm);flex-wrap:wrap;margin-bottom:var(--space-md);align-items:center;">
+                        <input class="form-input" id="audit-action" placeholder="action (e.g. project.delete)" style="max-width:240px;">
+                        <input class="form-input" id="audit-since" type="datetime-local" style="max-width:220px;" title="Show events on or after this time">
+                        ${isSystemAdmin() ? '<label class="auth-checkbox" style="border:1px solid var(--border);padding:6px 10px;border-radius:var(--radius-md);"><input type="checkbox" id="audit-global"><span>Global</span></label>' : ''}
+                        <button class="btn btn-secondary btn-sm" id="audit-refresh">Refresh</button>
+                    </div>
+                    <div class="audit-list" id="audit-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+                    <div style="margin-top:var(--space-md);"><button class="btn btn-secondary btn-sm" id="audit-loadmore" disabled>Load 25 more</button>
+                        <span id="audit-count" style="margin-left:var(--space-md);font-size:0.78rem;color:var(--text-muted);"></span></div></div>
                 <div class="glass-card no-hover settings-section"><h3>Data Management</h3>
                     <div class="btn-group">
                         <button class="btn btn-secondary" id="set-export">📥 Export Data</button>
@@ -1317,6 +1553,78 @@
                 const w = Math.max(0, Math.min(1, parseFloat(document.getElementById('set-ai-weight').value) || 0.4));
                 await api.put('/api/settings', { key: 'aiWeight', value: String(w) });
                 showToast(`AI weight set to ${w.toFixed(1)}`);
+            });
+            // ── Audit log ───────────────────────────────────
+            const auditState = { offset: 0, total: 0 };
+            async function fetchAudit(append = false) {
+                const action = document.getElementById('audit-action').value.trim();
+                const since = document.getElementById('audit-since').value;
+                const sinceIso = since ? new Date(since).toISOString() : '';
+                const isGlobal = document.getElementById('audit-global')?.checked === true;
+                if (!append) auditState.offset = 0;
+                const params = new URLSearchParams({ limit: '25', offset: String(auditState.offset) });
+                if (action) params.set('action', action);
+                if (sinceIso) params.set('since', sinceIso);
+                if (isGlobal) params.set('scope', 'all');
+                try {
+                    const data = await api.get(`/api/audit-log?${params.toString()}`);
+                    auditState.total = data.total;
+                    auditState.offset += data.events.length;
+                    renderAuditEvents(data.events, append);
+                    document.getElementById('audit-count').textContent =
+                        `${auditState.offset} of ${data.total} shown`;
+                    document.getElementById('audit-loadmore').disabled = auditState.offset >= data.total;
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            }
+            function renderAuditEvents(events, append) {
+                const list = document.getElementById('audit-list');
+                if (!list) return;
+                const html = events.map(ev => {
+                    const payload = ev.payload ? `<pre style="margin:6px 0 0;padding:6px 10px;background:rgba(255,255,255,0.03);border-radius:var(--radius);font-size:0.72rem;color:var(--text-secondary);overflow-x:auto;display:none;" data-pl>${escHtml(JSON.stringify(ev.payload, null, 2))}</pre>` : '';
+                    return `<div class="audit-entry" style="border:1px solid var(--border);border-radius:var(--radius-md);padding:8px 12px;cursor:${ev.payload ? 'pointer' : 'default'};">
+                        <div style="display:flex;gap:var(--space-md);align-items:center;flex-wrap:wrap;font-size:0.82rem;">
+                            <span style="color:var(--text-muted);font-family:var(--font-mono);font-size:0.75rem;white-space:nowrap;">${escHtml(fmtLocalDate(ev.createdAt))}</span>
+                            <span style="font-family:var(--font-mono);color:var(--accent-indigo);font-size:0.78rem;">${escHtml(ev.action)}</span>
+                            <span style="color:var(--text-secondary);">${escHtml(ev.actorUsername || '—')}</span>
+                            ${ev.targetType ? `<span style="color:var(--text-muted);font-size:0.78rem;">${escHtml(ev.targetType)}: ${escHtml((ev.targetId || '').slice(0, 16))}${(ev.targetId && ev.targetId.length > 16) ? '…' : ''}</span>` : ''}
+                            ${ev.ip ? `<span style="color:var(--text-muted);font-family:var(--font-mono);font-size:0.72rem;margin-left:auto;">${escHtml(ev.ip)}</span>` : ''}
+                        </div>
+                        ${payload}
+                    </div>`;
+                }).join('');
+                if (append) list.insertAdjacentHTML('beforeend', html);
+                else list.innerHTML = html || '<p style="color:var(--text-muted);font-size:0.85rem;">No events match those filters.</p>';
+                list.querySelectorAll('.audit-entry').forEach(row => {
+                    const pl = row.querySelector('[data-pl]');
+                    if (!pl) return;
+                    row.addEventListener('click', () => {
+                        pl.style.display = pl.style.display === 'none' ? 'block' : 'none';
+                    });
+                });
+            }
+            document.getElementById('audit-refresh').addEventListener('click', () => fetchAudit(false));
+            document.getElementById('audit-action').addEventListener('keydown', (e) => { if (e.key === 'Enter') fetchAudit(false); });
+            document.getElementById('audit-loadmore').addEventListener('click', () => fetchAudit(true));
+            const globalCb = document.getElementById('audit-global');
+            if (globalCb) globalCb.addEventListener('change', () => fetchAudit(false));
+            fetchAudit(false);
+
+            const saveTimingBtn = document.getElementById('set-save-timing');
+            if (saveTimingBtn) saveTimingBtn.addEventListener('click', async () => {
+                const startsAt = localInputToIso(document.getElementById('set-starts').value);
+                const submissionDeadline = localInputToIso(document.getElementById('set-deadline').value);
+                const endsAt = localInputToIso(document.getElementById('set-ends').value);
+                try {
+                    await api.put(`/api/hackathons/${encodeURIComponent(currentHackathon.id)}`, {
+                        startsAt, submissionDeadline, endsAt,
+                    });
+                    showToast('Timing updated', 'success');
+                    handleRoute(); // re-render so the phase pill refreshes
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
             });
             document.getElementById('btn-add-criterion').addEventListener('click', () => {
                 const body = `<div class="form-group"><label class="form-label">Name</label><input class="form-input" id="ac-name" placeholder="e.g. Scalability"></div>
@@ -1560,6 +1868,24 @@
         }
     }
 
+    // ─── Cookie consent banner ──────────────────────────────────
+    // Only strictly-necessary cookies are used (auth + CSRF), so this is
+    // notification rather than consent. We hide it once the user dismisses.
+    const COOKIE_CONSENT_KEY = 'hackeval_cookie_consent';
+    function wireCookieBanner() {
+        const banner = document.getElementById('cookie-banner');
+        const accept = document.getElementById('cookie-accept');
+        if (!banner || !accept) return;
+        let already;
+        try { already = localStorage.getItem(COOKIE_CONSENT_KEY); } catch { already = '1'; }
+        if (already) return;
+        banner.style.display = 'flex';
+        accept.addEventListener('click', () => {
+            try { localStorage.setItem(COOKIE_CONSENT_KEY, '1'); } catch {}
+            banner.style.display = 'none';
+        });
+    }
+
     // ─── Landing → auth wiring ──────────────────────────────────
     function wireLanding() {
         const goSignIn  = () => showAuthScreen('login');
@@ -1580,8 +1906,24 @@
         }
     }
 
+    // ─── Reset-link URL handler ─────────────────────────────────
+    // If the URL is `?reset=<token>`, jump straight into the reset-password
+    // form regardless of session state. (We don't blindly clear the session;
+    // the user might have followed the link from another tab.)
+    function handleResetLinkInUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const token = params.get('reset');
+        if (!token) return false;
+        resetTokenFromUrl = token;
+        authMode = 'reset';
+        updateAuthMode();
+        showAuthScreen();
+        return true;
+    }
+
     // ─── INIT ────────────────────────────────────────────────────
+    wireCookieBanner();
     wireLanding();
     setupAuthForm();
-    checkAuth();
+    if (!handleResetLinkInUrl()) checkAuth();
 })();

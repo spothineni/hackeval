@@ -19,6 +19,8 @@ const storageLib = require('./lib/storage');
 const { cookieMiddleware, buildSetCookie, timingSafeEqual } = require('./lib/cookies');
 const { buildAudit } = require('./lib/audit');
 const { buildHackathonHelpers } = require('./lib/hackathon');
+const { generateToken: genResetToken, hashToken: hashResetToken, isExpired: isResetExpired, ttlMs: resetTtlMs } = require('./lib/reset-tokens');
+const { computePhase, isSubmissionsOpen, isJudgingOpen, validateOrdering, coerceIso } = require('./lib/timing');
 
 // ─── Required env (fail fast) ───────────────────────────────
 const isProd = process.env.NODE_ENV === 'production';
@@ -207,6 +209,35 @@ app.use('/api/', apiLimiter);
 // ─── Async error wrapper ─────────────────────────────────────
 const asyncHandler = (fn) => (req, res, next) =>
     Promise.resolve(fn(req, res, next)).catch(next);
+
+// ─── Phase-aware gates ───────────────────────────────────────
+// Extend requireActiveHackathon with the event's clock — submissions and
+// judging each have their own window.
+const requireSubmissionsOpen = asyncHandler(async (req, res, next) => {
+    if (!req.hackathonId) return res.status(400).json({ error: 'X-Hackathon-Id header required' });
+    const h = await db.get(
+        'SELECT status, starts_at, submission_deadline, ends_at FROM hackathons WHERE id = ?',
+        [req.hackathonId]
+    );
+    if (!h) return res.status(404).json({ error: 'Hackathon not found' });
+    if (!isSubmissionsOpen(h)) {
+        return res.status(400).json({ error: 'Submissions are not open for this hackathon', phase: computePhase(h) });
+    }
+    next();
+});
+
+const requireJudgingOpen = asyncHandler(async (req, res, next) => {
+    if (!req.hackathonId) return res.status(400).json({ error: 'X-Hackathon-Id header required' });
+    const h = await db.get(
+        'SELECT status, starts_at, submission_deadline, ends_at FROM hackathons WHERE id = ?',
+        [req.hackathonId]
+    );
+    if (!h) return res.status(404).json({ error: 'Hackathon not found' });
+    if (!isJudgingOpen(h)) {
+        return res.status(400).json({ error: 'Judging is not open for this hackathon', phase: computePhase(h) });
+    }
+    next();
+});
 
 // ─── Audit ───────────────────────────────────────────────────
 // Records who did what, when. Best-effort — never fails the request.
@@ -451,6 +482,94 @@ app.post('/api/auth/logout', (req, res) => {
     res.json({ success: true });
 });
 
+// ─── Forgot / reset password ────────────────────────────────
+// We always return 200 with a generic success message, regardless of whether
+// the email is registered, so a stranger can't enumerate accounts.
+//
+// Email delivery is intentionally NOT wired up here — operators set their own
+// SMTP/transactional provider. In dev (NODE_ENV != production), the reset
+// link is logged to stderr so you can complete the flow without email.
+
+const APP_URL = (process.env.APP_URL || '').replace(/\/$/, '') || null;
+function buildResetUrl(req, token) {
+    const origin = APP_URL || `${req.protocol}://${req.get('host')}`;
+    return `${origin}/?reset=${encodeURIComponent(token)}`;
+}
+
+app.post('/api/auth/forgot-password', authLimiter, asyncHandler(async (req, res) => {
+    const { email } = req.body || {};
+    // Always return the generic message — no account enumeration.
+    const generic = { success: true, message: 'If that email is registered, a reset link has been sent.' };
+
+    if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.json(generic);
+    }
+    const user = await db.get('SELECT id, username FROM users WHERE email = ?', [email.toLowerCase()]);
+    if (!user) return res.json(generic);
+
+    const token = genResetToken();
+    const tokenHash = hashResetToken(token);
+    const expiresAt = new Date(Date.now() + resetTtlMs(process.env.RESET_TOKEN_TTL_MIN));
+    await db.run(
+        `INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)`,
+        [uuid(), user.id, tokenHash, expiresAt.toISOString()]
+    );
+
+    const link = buildResetUrl(req, token);
+    await audit({
+        actorUserId: user.id, actorUsername: user.username, ip: req.ip,
+        action: 'password_reset.requested', targetType: 'user', targetId: user.id,
+    });
+
+    if (!isProd) {
+        // Dev convenience: dump the link so you can finish the flow without
+        // an SMTP provider. Never enable in production.
+        console.log(`[PASSWORD-RESET] (dev) link for ${email}: ${link}`);
+    } else if (!process.env.SMTP_HOST) {
+        console.warn(`[PASSWORD-RESET] no SMTP configured; reset email NOT sent to ${email}. Configure email delivery to enable this in production.`);
+    }
+    // Production with SMTP: integrate your email provider here. The token,
+    // expiresAt, user.email and `link` are everything you need to send.
+
+    res.json(generic);
+}));
+
+app.post('/api/auth/reset-password', authLimiter, asyncHandler(async (req, res) => {
+    const { token, password } = req.body || {};
+    if (typeof token !== 'string' || token.length < 20 || token.length > 200) {
+        return res.status(400).json({ error: 'Invalid token' });
+    }
+    if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
+        return res.status(400).json({ error: 'Password must be 8-200 characters' });
+    }
+
+    const tokenHash = hashResetToken(token);
+    const row = await db.get(
+        `SELECT id, user_id, expires_at, used_at FROM password_reset_tokens WHERE token_hash = ?`,
+        [tokenHash]
+    );
+    if (!row || row.used_at || isResetExpired(row.expires_at)) {
+        return res.status(400).json({ error: 'Reset link is invalid or has expired' });
+    }
+
+    const hash = bcrypt.hashSync(password, 10);
+    await db.transaction(async (client) => {
+        await client.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, row.user_id]);
+        await client.query('UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1', [row.id]);
+        // Invalidate any other outstanding tokens for this user.
+        await client.query(
+            'UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL',
+            [row.user_id]
+        );
+    });
+    const user = await db.get('SELECT id, username FROM users WHERE id = ?', [row.user_id]);
+    await audit({
+        actorUserId: user?.id, actorUsername: user?.username, ip: req.ip,
+        action: 'password_reset.completed', targetType: 'user', targetId: row.user_id,
+    });
+    res.json({ success: true });
+}));
+
 // ═══════════════════════════════════════════════════════════
 // USER PROFILES
 // ═══════════════════════════════════════════════════════════
@@ -556,11 +675,12 @@ app.get('/api/auth/me', requireAuth, asyncHandler(async (req, res) => {
 //     when ?discover=1)
 app.get('/api/hackathons', requireAuth, asyncHandler(async (req, res) => {
     const wantsDiscover = req.query.discover === '1';
+    const cols = `h.id, h.slug, h.name, h.status, h.description, h.created_at,
+                  h.starts_at, h.submission_deadline, h.ends_at`;
     let rows;
     if (req.user.systemRole === 'system_admin') {
         rows = await db.all(
-            `SELECT h.id, h.slug, h.name, h.status, h.description, h.created_at,
-                    COALESCE(m.role, 'admin') AS role
+            `SELECT ${cols}, COALESCE(m.role, 'admin') AS role
              FROM hackathons h
              LEFT JOIN hackathon_memberships m ON m.hackathon_id = h.id AND m.user_id = ?
              ORDER BY h.created_at DESC`,
@@ -569,7 +689,7 @@ app.get('/api/hackathons', requireAuth, asyncHandler(async (req, res) => {
     } else if (wantsDiscover) {
         // Active events the caller is NOT yet a member of — for "join" UX.
         rows = await db.all(
-            `SELECT h.id, h.slug, h.name, h.status, h.description, h.created_at, NULL AS role
+            `SELECT ${cols}, NULL AS role
              FROM hackathons h
              LEFT JOIN hackathon_memberships m ON m.hackathon_id = h.id AND m.user_id = ?
              WHERE h.status = 'active' AND m.user_id IS NULL
@@ -578,7 +698,7 @@ app.get('/api/hackathons', requireAuth, asyncHandler(async (req, res) => {
         );
     } else {
         rows = await db.all(
-            `SELECT h.id, h.slug, h.name, h.status, h.description, h.created_at, m.role
+            `SELECT ${cols}, m.role
              FROM hackathons h
              JOIN hackathon_memberships m ON m.hackathon_id = h.id
              WHERE m.user_id = ?
@@ -589,6 +709,10 @@ app.get('/api/hackathons', requireAuth, asyncHandler(async (req, res) => {
     res.json(rows.map(r => ({
         id: r.id, slug: r.slug, name: r.name, status: r.status,
         description: r.description, role: r.role, createdAt: r.created_at,
+        startsAt: r.starts_at,
+        submissionDeadline: r.submission_deadline,
+        endsAt: r.ends_at,
+        phase: computePhase(r),
     })));
 }));
 
@@ -605,7 +729,7 @@ app.post('/api/hackathons', requireAuth, asyncHandler(async (req, res) => {
         return res.status(403).json({ error: 'Only organizers and system admins can create hackathons' });
     }
 
-    const { slug, name, description } = req.body || {};
+    const { slug, name, description, startsAt, submissionDeadline, endsAt } = req.body || {};
     if (!slug || !/^[a-z0-9][a-z0-9-]{1,40}$/.test(slug)) {
         return res.status(400).json({ error: 'slug must be 2-41 chars, lowercase alphanumerics + hyphens' });
     }
@@ -615,6 +739,17 @@ app.post('/api/hackathons', requireAuth, asyncHandler(async (req, res) => {
     if (description !== undefined && description !== null && (typeof description !== 'string' || description.length > 5000)) {
         return res.status(400).json({ error: 'description must be a string up to 5000 chars' });
     }
+    let startsIso, deadlineIso, endsIso;
+    try {
+        startsIso = coerceIso(startsAt);
+        deadlineIso = coerceIso(submissionDeadline);
+        endsIso = coerceIso(endsAt);
+    } catch (e) {
+        return res.status(400).json({ error: e.message });
+    }
+    const orderErr = validateOrdering({ startsAt: startsIso, submissionDeadline: deadlineIso, endsAt: endsIso });
+    if (orderErr) return res.status(400).json({ error: orderErr });
+
     const dupe = await db.get('SELECT id FROM hackathons WHERE slug = ?', [slug]);
     if (dupe) return res.status(409).json({ error: 'slug already taken' });
 
@@ -622,12 +757,14 @@ app.post('/api/hackathons', requireAuth, asyncHandler(async (req, res) => {
     const initialStatus = isSystemAdmin ? 'active' : 'pending';
     await db.transaction(async (client) => {
         await client.query(
-            `INSERT INTO hackathons (id, slug, name, description, status, created_by, approved_by, approved_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            `INSERT INTO hackathons (id, slug, name, description, status, created_by, approved_by, approved_at,
+                                    starts_at, submission_deadline, ends_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
             [
                 id, slug, name, description || null, initialStatus, req.user.id,
                 isSystemAdmin ? req.user.id : null,
                 isSystemAdmin ? new Date() : null,
+                startsIso, deadlineIso, endsIso,
             ]
         );
         await client.query(
@@ -748,8 +885,10 @@ app.get('/api/hackathons/:hid', requireAuth, asyncHandler(async (req, res) => {
         if (!role) return res.status(403).json({ error: 'Not a member of this hackathon' });
     }
     res.json({
-        id: h.id, slug: h.slug, name: h.name, status: h.status,
+        id: h.id, slug: h.slug, name: h.name, description: h.description, status: h.status,
         createdAt: h.created_at, archivedAt: h.archived_at,
+        startsAt: h.starts_at, submissionDeadline: h.submission_deadline, endsAt: h.ends_at,
+        phase: computePhase(h),
     });
 }));
 
@@ -758,7 +897,7 @@ app.put('/api/hackathons/:hid', requireAuth, asyncHandler(async (req, res) => {
         const role = await getMembershipRole(req.user.id, req.params.hid);
         if (role !== 'admin') return res.status(403).json({ error: 'Hackathon admin access required' });
     }
-    const { name, status } = req.body || {};
+    const { name, description, status, startsAt, submissionDeadline, endsAt } = req.body || {};
     const updates = [];
     const params = [];
     if (name !== undefined) {
@@ -766,6 +905,12 @@ app.put('/api/hackathons/:hid', requireAuth, asyncHandler(async (req, res) => {
             return res.status(400).json({ error: 'invalid name' });
         }
         updates.push('name = ?'); params.push(name);
+    }
+    if (description !== undefined) {
+        if (description !== null && (typeof description !== 'string' || description.length > 5000)) {
+            return res.status(400).json({ error: 'invalid description' });
+        }
+        updates.push('description = ?'); params.push(description || null);
     }
     if (status !== undefined) {
         if (!['active', 'archived'].includes(status)) {
@@ -775,13 +920,42 @@ app.put('/api/hackathons/:hid', requireAuth, asyncHandler(async (req, res) => {
         if (status === 'archived') updates.push('archived_at = NOW()');
         else updates.push('archived_at = NULL');
     }
+
+    // Date fields: undefined = no change, null/'' = clear, valid date = set.
+    let startsIso, deadlineIso, endsIso;
+    try {
+        if (startsAt !== undefined) startsIso = coerceIso(startsAt);
+        if (submissionDeadline !== undefined) deadlineIso = coerceIso(submissionDeadline);
+        if (endsAt !== undefined) endsIso = coerceIso(endsAt);
+    } catch (e) {
+        return res.status(400).json({ error: e.message });
+    }
+    // Validate ordering against the merged final state (read existing, layer changes).
+    if (startsAt !== undefined || submissionDeadline !== undefined || endsAt !== undefined) {
+        const current = await db.get(
+            'SELECT starts_at, submission_deadline, ends_at FROM hackathons WHERE id = ?',
+            [req.params.hid]
+        );
+        const merged = {
+            startsAt:           startsAt !== undefined ? startsIso : current?.starts_at,
+            submissionDeadline: submissionDeadline !== undefined ? deadlineIso : current?.submission_deadline,
+            endsAt:             endsAt !== undefined ? endsIso : current?.ends_at,
+        };
+        const orderErr = validateOrdering(merged);
+        if (orderErr) return res.status(400).json({ error: orderErr });
+    }
+    if (startsAt !== undefined)           { updates.push('starts_at = ?');           params.push(startsIso); }
+    if (submissionDeadline !== undefined) { updates.push('submission_deadline = ?'); params.push(deadlineIso); }
+    if (endsAt !== undefined)             { updates.push('ends_at = ?');             params.push(endsIso); }
+
     if (updates.length === 0) return res.status(400).json({ error: 'nothing to update' });
     params.push(req.params.hid);
     await db.run(`UPDATE hackathons SET ${updates.join(', ')} WHERE id = ?`, params);
     await audit({
         actorUserId: req.user.id, actorUsername: req.user.username, ip: req.ip,
         action: 'hackathon.update', targetType: 'hackathon', targetId: req.params.hid,
-        payload: { name, status }, hackathonId: req.params.hid,
+        payload: { name, description, status, startsAt: startsIso, submissionDeadline: deadlineIso, endsAt: endsIso },
+        hackathonId: req.params.hid,
     });
     res.json({ success: true });
 }));
@@ -1056,7 +1230,7 @@ app.get('/api/projects', requireAuth, requireHackathonAccess, asyncHandler(async
     })));
 }));
 
-app.post('/api/projects', requireAuth, requireHackathonAccess, requireActiveHackathon, asyncHandler(async (req, res) => {
+app.post('/api/projects', requireAuth, requireHackathonAccess, requireSubmissionsOpen, asyncHandler(async (req, res) => {
     const err = validateProject(req.body);
     if (err) return res.status(400).json({ error: err });
     const { name, members, description, techStack, demoUrl } = req.body;
@@ -1104,7 +1278,7 @@ app.delete('/api/projects/:id', requireAuth, requireProjectOwnerOrAdmin, asyncHa
 // PROJECT FILES (Upload / Download)
 // ═══════════════════════════════════════════════════════════
 
-app.post('/api/projects/:id/files', requireAuth, requireProjectOwnerOrAdmin, requireActiveHackathon, upload.array('files', 50), asyncHandler(async (req, res) => {
+app.post('/api/projects/:id/files', requireAuth, requireProjectOwnerOrAdmin, requireSubmissionsOpen, upload.array('files', 50), asyncHandler(async (req, res) => {
     const projectId = req.params.id;
     const project = await db.get('SELECT id FROM projects WHERE id = ?', [projectId]);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -1281,7 +1455,7 @@ function getLanguage(ext) {
 // AI EVALUATION (OpenAI GPT-4o → AWS Bedrock → Simulated)
 // ═══════════════════════════════════════════════════════════
 
-app.post('/api/projects/:id/ai-evaluate', aiLimiter, requireAuth, requireAdmin, requireActiveHackathon, asyncHandler(verifyProjectInHackathon), asyncHandler(async (req, res) => {
+app.post('/api/projects/:id/ai-evaluate', aiLimiter, requireAuth, requireAdmin, requireJudgingOpen, asyncHandler(verifyProjectInHackathon), asyncHandler(async (req, res) => {
     const projectId = req.params.id;
     const project = await db.get('SELECT * FROM projects WHERE id = ?', [projectId]);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -1506,7 +1680,7 @@ app.get('/api/evaluations', requireAuth, requireHackathonAccess, asyncHandler(as
     })));
 }));
 
-app.post('/api/evaluations', requireAuth, requireJudgeOrAdmin, requireActiveHackathon, asyncHandler(async (req, res) => {
+app.post('/api/evaluations', requireAuth, requireJudgeOrAdmin, requireJudgingOpen, asyncHandler(async (req, res) => {
     const { projectId, scores, notes } = req.body;
     const judgeName = req.user.displayName;
     if (!projectId) return res.status(400).json({ error: 'projectId required' });
