@@ -5,6 +5,8 @@
 **The complete, multi-tenant hackathon platform.**
 Organizers create. Admins approve. Participants submit. Judges score — with optional AI assist.
 
+🌐 **Live at [www.hackeval.com](https://www.hackeval.com)**
+
 [![Node.js](https://img.shields.io/badge/Node.js-20+-43853d?logo=node.js&logoColor=white)](https://nodejs.org)
 [![Postgres](https://img.shields.io/badge/Postgres-13+-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org)
 [![Tests](https://img.shields.io/badge/tests-105_passing-10b981)](#development)
