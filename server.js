@@ -100,6 +100,9 @@ const openaiClient = process.env.OPENAI_API_KEY
     : null;
 
 // ─── Middleware ──────────────────────────────────────────────
+// Trust the first proxy (Cloud Run / load balancer) so that
+// express-rate-limit reads the real client IP from X-Forwarded-For.
+app.set('trust proxy', 1);
 // CORS: same-origin only by default (frontend is served from this server).
 // Set CORS_ORIGIN to a comma-separated list to allow specific cross-origin
 // callers, or "*" to allow any (not recommended in production).
