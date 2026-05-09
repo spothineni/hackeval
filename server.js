@@ -20,6 +20,7 @@ const { cookieMiddleware, buildSetCookie, timingSafeEqual } = require('./lib/coo
 const { buildAudit } = require('./lib/audit');
 const { buildHackathonHelpers } = require('./lib/hackathon');
 const { generateToken: genResetToken, hashToken: hashResetToken, isExpired: isResetExpired, ttlMs: resetTtlMs } = require('./lib/reset-tokens');
+const { sendPasswordReset } = require('./lib/mailer');
 const { computePhase, isSubmissionsOpen, isJudgingOpen, validateOrdering, coerceIso } = require('./lib/timing');
 
 // ─── Required env (fail fast) ───────────────────────────────
@@ -523,13 +524,17 @@ app.post('/api/auth/forgot-password', authLimiter, asyncHandler(async (req, res)
 
     if (!isProd) {
         // Dev convenience: dump the link so you can finish the flow without
-        // an SMTP provider. Never enable in production.
+        // an SMTP provider.
         console.log(`[PASSWORD-RESET] (dev) link for ${email}: ${link}`);
-    } else if (!process.env.SMTP_HOST) {
-        console.warn(`[PASSWORD-RESET] no SMTP configured; reset email NOT sent to ${email}. Configure email delivery to enable this in production.`);
     }
-    // Production with SMTP: integrate your email provider here. The token,
-    // expiresAt, user.email and `link` are everything you need to send.
+
+    // Send the real reset email via Zoho SMTP
+    try {
+        await sendPasswordReset({ to: email, name: user.username, resetLink: link });
+    } catch (emailErr) {
+        console.error(`[PASSWORD-RESET] Failed to send email to ${email}:`, emailErr.message);
+        // Still return success — don't expose internal errors to the caller.
+    }
 
     res.json(generic);
 }));

@@ -124,7 +124,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --min-instances=0 \
   --max-instances=5 \
   --timeout=300 \
-  --set-secrets="JWT_SECRET=${SECRET_NAME}:latest,OPENAI_API_KEY=openai-api-key:latest,DATABASE_URL=neon-database-url:latest" \
+  --set-secrets="JWT_SECRET=${SECRET_NAME}:latest,OPENAI_API_KEY=openai-api-key:latest,DATABASE_URL=neon-database-url:latest,SMTP_USER=zoho-smtp-user:latest,SMTP_PASS=zoho-smtp-pass:latest" \
   --set-env-vars="NODE_ENV=production,AWS_REGION=us-east-1,OPENAI_MODEL=gpt-4o" \
   --quiet
 
