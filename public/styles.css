@@ -134,6 +134,26 @@ body {
 .nav-icon svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; }
 .nav-label { white-space: nowrap; transition: opacity var(--transition); }
 
+/* Primary action in the sidebar — "New Hackathon" for organizers/sysadmins. */
+.nav-link-create {
+    margin: var(--space-sm) var(--space-md);
+    padding: 9px 12px;
+    background: linear-gradient(135deg, var(--accent-indigo), #5558E6);
+    color: #fff !important;
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    box-shadow: 0 2px 12px rgba(99,102,241,0.25);
+    transition: all 180ms ease;
+}
+.nav-link-create:hover {
+    background: linear-gradient(135deg, #5558E6, var(--accent-indigo));
+    transform: translateY(-1px);
+    box-shadow: 0 4px 18px rgba(99,102,241,0.4);
+}
+.nav-link-create.active { background: linear-gradient(135deg, #5558E6, var(--accent-indigo)); }
+.nav-link-create.active::before { display: none; }
+.nav-link-create .nav-icon svg { stroke-width: 2.4; }
+
 .sidebar-footer { padding: var(--space-md); border-top: 1px solid var(--border); }
 
 .hackathon-badge {

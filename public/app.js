@@ -495,6 +495,8 @@
         }
         const settingsItem = document.getElementById('nav-settings-item');
         if (settingsItem) settingsItem.style.display = isAdmin() ? '' : 'none';
+        const createItem = document.getElementById('nav-create-hackathon-item');
+        if (createItem) createItem.style.display = canCreateHackathon() ? '' : 'none';
         const judgingItem = document.getElementById('nav-judging-item');
         if (judgingItem) judgingItem.style.display = isParticipant() ? 'none' : '';
         const projectsItem = document.getElementById('nav-projects-item');
@@ -847,7 +849,15 @@
         document.getElementById('sidebar').classList.toggle('collapsed');
     });
     document.querySelectorAll('.nav-link').forEach(link => {
-        link.addEventListener('click', e => { e.preventDefault(); navigate(link.dataset.page); });
+        link.addEventListener('click', e => {
+            e.preventDefault();
+            // Special pseudo-page: opens the create-hackathon modal instead of routing.
+            if (link.dataset.page === '__create_hackathon') {
+                createHackathonPrompt();
+                return;
+            }
+            navigate(link.dataset.page);
+        });
     });
     document.getElementById('btn-logout').addEventListener('click', () => { logout(); showToast('Signed out', 'info'); });
 
