@@ -87,6 +87,35 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 # can't enumerate other apps' parameters in the account.
 data "aws_caller_identity" "current" {}
 
+# Read/write/delete objects in the upload bucket. Conditional on
+# var.storage_bucket — if empty, no policy is created (the app falls back to
+# local-disk storage, which is not durable on EC2 either; production
+# operators should ALWAYS set this).
+resource "aws_iam_role_policy" "s3_upload_access" {
+  count = var.storage_bucket != "" ? 1 : 0
+  name  = "${var.project_name}-s3-uploads"
+  role  = aws_iam_role.ec2.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Object-level: get/put/delete only on objects in this bucket.
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Resource = "arn:aws:s3:::${var.storage_bucket}/*"
+      },
+      {
+        # Bucket-level: list is occasionally needed by the SDK (e.g. to
+        # confirm the bucket exists). Scoped to this one bucket.
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket", "s3:GetBucketLocation"]
+        Resource = "arn:aws:s3:::${var.storage_bucket}"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy" "ssm_param_read" {
   name = "${var.project_name}-ssm-param-read"
   role = aws_iam_role.ec2.id

@@ -28,6 +28,10 @@ const isProd = process.env.NODE_ENV === 'production';
 const missingEnv = [];
 if (!process.env.DATABASE_URL) missingEnv.push('DATABASE_URL');
 if (isProd && !process.env.JWT_SECRET) missingEnv.push('JWT_SECRET');
+// APP_URL is required in production: without it, password-reset email links
+// fall back to the request Host header, which an upstream proxy can spoof.
+// Set it to the public origin (e.g. https://hackeval.example.com).
+if (isProd && !process.env.APP_URL) missingEnv.push('APP_URL');
 if (missingEnv.length) {
     console.error(`[FATAL] Missing required environment variables: ${missingEnv.join(', ')}`);
     console.error('Set them before starting the server. Aborting.');
@@ -509,9 +513,10 @@ app.post('/api/auth/logout', (req, res) => {
 // link is logged to stderr so you can complete the flow without email.
 
 const APP_URL = (process.env.APP_URL || '').replace(/\/$/, '') || null;
-if (isProd && !APP_URL) {
-    console.warn('[WARN] APP_URL is not set. Reset links will be derived from the Host header, which an attacker can spoof. Set APP_URL=https://your.domain in production.');
-}
+// In production we already fail-fast at startup if APP_URL is unset (see the
+// missingEnv check above), so reaching this code with isProd && !APP_URL is
+// impossible. In dev it's allowed to be empty — Host header is fine for
+// localhost development.
 function buildResetUrl(req, token) {
     // Prefer APP_URL — Host header can be spoofed by upstream proxies and
     // would let an attacker who triggers a reset email control the link target.

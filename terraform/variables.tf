@@ -78,3 +78,14 @@ variable "ssm_kms_key_arn" {
   type        = string
   default     = ""
 }
+
+# S3 bucket holding uploaded submissions. Must match the STORAGE_BUCKET
+# value in SSM (the userdata reads it from there at runtime); this variable
+# only scopes the IAM policy. Leave empty to skip the S3 grant — the app
+# will then fall back to local-disk uploads (ephemeral, NOT recommended in
+# production).
+variable "storage_bucket" {
+  description = "S3 bucket name for upload blobs. Empty = no S3 grant."
+  type        = string
+  default     = ""
+}
